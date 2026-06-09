@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.pyo
+.Python
+.venv/
+venv/
+env/
+.DS_Store
+Thumbs.db
+
+# Local case outputs; keep the skill generic.
+软件著作权申请资料/
+正式资料/
+草稿/
+analysis/
+截图/
+
+# Temporary exports and rendered QA artifacts.
+*.tmp
+*.bak
+~$*
