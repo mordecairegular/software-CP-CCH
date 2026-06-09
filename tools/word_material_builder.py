@@ -27,9 +27,11 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Inches, Pt, RGBColor
 
 try:
-    from PIL import Image
+    from PIL import Image, ImageDraw, ImageFont
 except Exception:  # pragma: no cover - optional for structural generation
     Image = None
+    ImageDraw = None
+    ImageFont = None
 
 
 LINES_PER_PAGE = 50
@@ -175,6 +177,10 @@ def clean_markdown(text: str) -> str:
     text = re.sub(r"^\s*[-*]\s+", "・", text, flags=re.MULTILINE)
     text = re.sub(r"^\s*\d+\.\s+", "", text, flags=re.MULTILINE)
     return re.sub(r"\n{3,}", "\n\n", text).strip()
+
+
+def extract_mermaid_blocks(text: str) -> list[str]:
+    return [match.group(1).strip() for match in re.finditer(r"```mermaid\s*([\s\S]*?)```", text, flags=re.IGNORECASE)]
 
 
 def compose_main_function_text(meta: dict[str, str], business: dict[str, str]) -> str:
@@ -572,11 +578,11 @@ def add_code_line(doc: Document, text: str) -> None:
 
 
 def find_screenshots(workdir: Path, explicit_dir: Path | None) -> list[Path]:
-    dirs = []
     if explicit_dir:
-        dirs.append(explicit_dir)
-    dirs.append(workdir / "正式资料" / "word" / "screenshots")
-    dirs.append(workdir / "截图")
+        dirs = [explicit_dir]
+    else:
+        word_dir = workdir / "正式资料" / "word" / "screenshots"
+        dirs = [word_dir] if list(word_dir.glob("*.png")) else [workdir / "截图"]
     seen = set()
     files: list[Path] = []
     for directory in dirs:
@@ -592,67 +598,347 @@ def find_screenshots(workdir: Path, explicit_dir: Path | None) -> list[Path]:
     return files
 
 
+def cn_number(num: int) -> str:
+    digits = "零一二三四五六七八九"
+    if 1 <= num <= 10:
+        return "十" if num == 10 else digits[num]
+    if 11 <= num <= 19:
+        return "十" + digits[num - 10]
+    if 20 <= num <= 99:
+        tens, ones = divmod(num, 10)
+        return digits[tens] + "十" + (digits[ones] if ones else "")
+    return str(num)
+
+
+def extract_manual_modules(business: dict[str, str]) -> list[tuple[str, str]]:
+    text = business.get("functions") or ""
+    modules: list[tuple[str, str]] = []
+    for raw in text.splitlines():
+        line = raw.strip(" ・-;；")
+        if not line:
+            continue
+        if "：" in line:
+            title, body = line.split("：", 1)
+        elif ":" in line:
+            title, body = line.split(":", 1)
+        else:
+            title, body = line[:18], line
+        title = re.sub(r"^[（(]?\d+[）)]?\s*", "", title).strip()
+        body = body.strip() or line
+        if not title or len(title) > 28:
+            title = "功能模块操作"
+        modules.append((title, body))
+    if modules:
+        return modules[:6]
+    return [
+        ("数据录入与配置", "用户在该模块录入或选择待处理对象，设置必要参数，完成处理前的基础配置。"),
+        ("业务处理与结果查看", "用户触发处理操作后，软件按照预设逻辑完成计算、整理、筛选、生成或校验，并在界面中展示处理结果和状态提示。"),
+        ("记录管理与资料导出", "用户可查看历史记录、导出结果文件或生成报告，便于后续复核、归档和交付。"),
+    ]
+
+
+def parse_output_rows(manual_text: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    in_table = False
+    for raw in manual_text.splitlines():
+        line = raw.strip()
+        if not line.startswith("|") or "|" not in line[1:]:
+            if in_table:
+                break
+            continue
+        cells = [clean_value(cell) for cell in line.strip("|").split("|")]
+        if len(cells) < 2:
+            continue
+        if all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells):
+            in_table = True
+            continue
+        if cells[0] in {"字段", "名称", "输出项"}:
+            in_table = True
+            continue
+        if in_table:
+            rows.append((cells[0], cells[1]))
+    return rows[:12]
+
+
+def render_mermaid_blocks(blocks: list[str], out_dir: Path, qa: list[str]) -> list[Path]:
+    if not blocks:
+        return []
+    out_dir.mkdir(parents=True, exist_ok=True)
+    paths: list[Path] = []
+    for index, block in enumerate(blocks, start=1):
+        path = out_dir / f"mermaid_flow_{index:02d}.png"
+        try:
+            draw_mermaid_flowchart(block, path)
+            paths.append(path)
+        except Exception as exc:
+            qa.append(f"WARN: failed to render Mermaid block {index}: {exc}")
+    if paths:
+        qa.append(f"PASS: rendered {len(paths)} Mermaid diagram(s) to images")
+    return paths
+
+
+def pick_screenshots(screenshots: list[Path], keywords: list[str], used: set[Path], *, fallback: bool = True, mark_used: bool = True) -> list[Path]:
+    for keyword in keywords:
+        for path in screenshots:
+            if path in used:
+                continue
+            if keyword.lower() in path.name.lower():
+                if mark_used:
+                    used.add(path)
+                return [path]
+    for keyword in keywords:
+        for path in screenshots:
+            if keyword.lower() in path.name.lower():
+                return [path]
+    if fallback:
+        for path in screenshots:
+            if path not in used:
+                if mark_used:
+                    used.add(path)
+                return [path]
+    return []
+
+
+def module_screenshot_keywords(title: str) -> list[str]:
+    mapping = [
+        ("单点", ["main_evaluation_result", "evaluation_result"]),
+        ("批量", ["batch_evaluation", "batch"]),
+        ("曲线", ["model_curves", "curve"]),
+        ("记录", ["history_records", "history"]),
+        ("报告", ["generated_html_report", "report"]),
+        ("工况", ["single_case_workspace", "workspace"]),
+        ("录入", ["single_case_workspace", "workspace"]),
+        ("评估", ["main_evaluation_result", "evaluation_result"]),
+        ("移动", ["mobile_responsive", "mobile"]),
+    ]
+    for needle, keywords in mapping:
+        if needle in title:
+            return keywords
+    return []
+
+
+def parse_mermaid_node(token: str) -> tuple[str, str]:
+    token = token.strip().strip(";")
+    token = re.sub(r"^&\s*", "", token)
+    match = re.match(r"([A-Za-z0-9_\u4e00-\u9fff-]+)\s*(?:\[(.*?)\]|\((.*?)\)|\{(.*?)\})?", token)
+    if not match:
+        label = token.strip("\"'")
+        return label, label
+    node_id = match.group(1)
+    label = next((group for group in match.groups()[1:] if group), None) or node_id
+    return node_id, label.strip("\"'")
+
+
+def parse_mermaid_edges(block: str) -> tuple[str, dict[str, str], list[tuple[str, str, str]]]:
+    direction = "TD"
+    nodes: dict[str, str] = {}
+    edges: list[tuple[str, str, str]] = []
+    for raw in block.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("%%"):
+            continue
+        header = re.match(r"^(flowchart|graph)\s+(TD|TB|BT|LR|RL)", line, re.IGNORECASE)
+        if header:
+            direction = header.group(2).upper()
+            continue
+        if "-->" not in line and "---" not in line:
+            node_id, label = parse_mermaid_node(line)
+            if node_id:
+                nodes.setdefault(node_id, label)
+            continue
+        label = ""
+        line = line.rstrip(";")
+        label_match = re.search(r"-->\|([^|]+)\|", line)
+        if label_match:
+            label = label_match.group(1).strip()
+            left, right = re.split(r"-->\|[^|]+\|", line, maxsplit=1)
+        elif "-->" in line:
+            left, right = line.split("-->", 1)
+        else:
+            left, right = line.split("---", 1)
+        left_id, left_label = parse_mermaid_node(left)
+        right_id, right_label = parse_mermaid_node(right)
+        nodes.setdefault(left_id, left_label)
+        nodes.setdefault(right_id, right_label)
+        edges.append((left_id, right_id, label))
+    return direction, nodes, edges
+
+
+def load_diagram_font(size: int):
+    if ImageFont is None:
+        return None
+    font_dir = Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"
+    for name in ["msyh.ttc", "simhei.ttf", "simsun.ttc", "arial.ttf"]:
+        path = font_dir / name
+        if path.exists():
+            return ImageFont.truetype(str(path), size)
+    return ImageFont.load_default()
+
+
+def wrap_text_for_box(text: str, width: int = 12) -> str:
+    text = re.sub(r"\s+", " ", text).strip()
+    if len(text) <= width:
+        return text
+    return "\n".join(text[i : i + width] for i in range(0, len(text), width))
+
+
+def draw_mermaid_flowchart(block: str, path: Path) -> None:
+    if Image is None or ImageDraw is None:
+        raise RuntimeError("Pillow is required to render Mermaid diagrams")
+    direction, nodes, edges = parse_mermaid_edges(block)
+    if not nodes:
+        raise ValueError("no Mermaid flowchart nodes parsed")
+    ordered = list(nodes.keys())
+    horizontal = direction in {"LR", "RL"}
+    box_w, box_h = 190, 76
+    gap_x, gap_y = 70, 50
+    margin = 50
+    if horizontal:
+        width = margin * 2 + len(ordered) * box_w + max(0, len(ordered) - 1) * gap_x
+        height = margin * 2 + box_h + 40
+        positions = {node: (margin + idx * (box_w + gap_x), margin + 20) for idx, node in enumerate(ordered)}
+    else:
+        width = margin * 2 + box_w + 320
+        height = margin * 2 + len(ordered) * box_h + max(0, len(ordered) - 1) * gap_y
+        positions = {node: (margin + 160, margin + idx * (box_h + gap_y)) for idx, node in enumerate(ordered)}
+    img = Image.new("RGB", (max(width, 640), max(height, 360)), "white")
+    draw = ImageDraw.Draw(img)
+    font = load_diagram_font(20)
+    small_font = load_diagram_font(16)
+    border = (44, 88, 156)
+    fill = (239, 246, 255)
+    line_color = (60, 70, 85)
+
+    for src, dst, label in edges:
+        if src not in positions or dst not in positions:
+            continue
+        x1, y1 = positions[src]
+        x2, y2 = positions[dst]
+        start = (x1 + box_w if horizontal else x1 + box_w // 2, y1 + box_h // 2 if horizontal else y1 + box_h)
+        end = (x2 if horizontal else x2 + box_w // 2, y2 + box_h // 2 if horizontal else y2)
+        draw.line([start, end], fill=line_color, width=3)
+        arrow = 10
+        if horizontal:
+            draw.polygon([(end[0], end[1]), (end[0] - arrow, end[1] - arrow // 2), (end[0] - arrow, end[1] + arrow // 2)], fill=line_color)
+        else:
+            draw.polygon([(end[0], end[1]), (end[0] - arrow // 2, end[1] - arrow), (end[0] + arrow // 2, end[1] - arrow)], fill=line_color)
+        if label:
+            mid = ((start[0] + end[0]) // 2, (start[1] + end[1]) // 2)
+            draw.text((mid[0] + 4, mid[1] - 18), label, fill=(90, 90, 90), font=small_font)
+
+    for node, label in nodes.items():
+        x, y = positions[node]
+        draw.rounded_rectangle([x, y, x + box_w, y + box_h], radius=12, fill=fill, outline=border, width=3)
+        wrapped = wrap_text_for_box(label)
+        bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=4)
+        text_w = bbox[2] - bbox[0]
+        text_h = bbox[3] - bbox[1]
+        draw.multiline_text((x + (box_w - text_w) / 2, y + (box_h - text_h) / 2 - 2), wrapped, fill=(20, 30, 45), font=font, align="center", spacing=4)
+    img.save(path)
+
+
+def insert_diagram_block(doc: Document, diagrams: list[Path], label: str, qa: list[str]) -> None:
+    for path in diagrams:
+        caption = doc.add_paragraph()
+        caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = caption.add_run(f"图：{label}（{path.name}）")
+        run.font.name = "宋体"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        run.font.size = Pt(9)
+        try:
+            doc.add_picture(str(path), width=Inches(5.8))
+            doc.paragraphs[-1].alignment = WD_ALIGN_PARAGRAPH.CENTER
+        except Exception as exc:
+            qa.append(f"WARN: failed to insert diagram {path}: {exc}")
+
+
+def verify_manual_docx(path: Path) -> list[str]:
+    doc = Document(str(path))
+    text = "\n".join(p.text for p in doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            text += "\n" + "\t".join(cell.text for cell in row.cells)
+    checks: list[str] = []
+    forbidden = ["附录：原始操作手册草稿摘要", "```mermaid", "```", "草稿摘要"]
+    hits = [item for item in forbidden if item in text]
+    if hits:
+        checks.append("FAIL: manual contains draft/code artifacts: " + "、".join(hits))
+    if re.search(r"(?m)^\s*#{1,6}\s+", text):
+        checks.append("FAIL: manual contains raw Markdown heading markers")
+    return checks or ["PASS: manual has no raw draft appendix or Mermaid code blocks"]
+
+
 def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], business: dict[str, str], screenshots_dir: Path | None) -> tuple[GeneratedFile, list[str]]:
     qa: list[str] = []
     out_path = out_dir / f"03 {safe_filename(meta['software_name'] + meta['version'])} 操作说明书.docx"
     screenshots = find_screenshots(workdir, screenshots_dir)
     manual_text = read_text(workdir / "草稿" / "操作手册.md")
+    diagrams = render_mermaid_blocks(extract_mermaid_blocks(manual_text), out_dir / "diagrams", qa)
+    modules = extract_manual_modules(business)
 
     doc = Document()
     setup_normal_style(doc)
     set_header_footer(doc, f"{meta['software_name']}{meta['version']} 操作说明书")
     add_cover(doc, meta, "操  作  说  明  书", f"编制人：{meta['developer']}    版本：{meta['version']}    日期：{datetime.now().strftime('%Y年%m月%d日')}")
 
-    add_heading_cn(doc, "一、软件简介", 1)
+    section_no = 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、软件简介", 1)
     add_paragraphs(doc, compose_intro(meta, business))
-    add_heading_cn(doc, "二、运行环境", 1)
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、运行环境", 1)
     add_paragraphs(doc, business.get("environment") or "本软件运行于可使用 Python 3.10 以上环境的个人计算机，并通过本地浏览器访问 Web 操作界面。")
-    add_heading_cn(doc, "三、软件启动与主界面总览", 1)
-    add_paragraphs(doc, "用户进入软件目录后运行本地服务，在浏览器中访问 127.0.0.1 地址即可进入主界面。主界面由导航区、工况录入区、评估结果区、模型曲线区、批量评估区和历史记录区组成。")
-    insert_screenshot_block(doc, screenshots[:1], "主界面总览", qa)
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、软件启动与主界面总览", 1)
+    add_paragraphs(doc, "用户按照软件部署说明启动程序后进入主界面。主界面通常包括功能入口、参数或数据录入区、处理结果区、记录区和导出入口；具体控件以实际截图为准。")
+    used_screenshots: set[Path] = set()
+    insert_screenshot_block(doc, pick_screenshots(screenshots, ["single_case_workspace", "main_evaluation_result"], used_screenshots, mark_used=False), "主界面总览", qa)
 
-    modules = [
-        ("四、单点评估操作", "在工况录入区域填写案例编号、项目名称、海拔、气隙、系统电压、安全系数和备注，点击“计算裕度”后，软件返回风险等级、安全裕度、气压、击穿电压、临界气隙上界和工程建议。"),
-        ("五、模型曲线查看", "模型曲线区域用于查看不同海拔下安全裕度曲线、当前海拔帕邢曲线和系统电压热力图，帮助用户判断当前工况在参数空间中的风险位置。"),
-        ("六、批量评估操作", "用户可粘贴 CSV 格式的多条工况数据，点击“运行批量评估”后软件逐行计算并显示总工况数、负裕度数量、临界数量和最低裕度，并导出结果文件。"),
-        ("七、记录管理与导出", "软件将评估结果保存到本地 SQLite 数据库，并在记录表中展示最近案例。用户可导出 CSV 记录，用于项目评审、试验记录和复盘材料归档。"),
-        ("八、报告生成", "完成单点评估后，用户点击“生成报告”，软件生成包含案例参数、计算结果、风险建议和适用边界说明的 HTML 报告。"),
-    ]
-    screenshot_cursor = 1
+    if diagrams:
+        section_no += 1
+        add_heading_cn(doc, f"{cn_number(section_no)}、业务流程图", 1)
+        add_paragraphs(doc, "本节流程图由操作手册草稿中的 Mermaid 流程描述转换为图片后插入，用于展示软件主要操作路径。")
+        insert_diagram_block(doc, diagrams, "业务流程图", qa)
+
     for title, body in modules:
-        add_heading_cn(doc, title, 1)
+        section_no += 1
+        add_heading_cn(doc, f"{cn_number(section_no)}、{title}", 1)
         add_paragraphs(doc, body)
-        chunk = screenshots[screenshot_cursor : screenshot_cursor + 2]
-        insert_screenshot_block(doc, chunk, title.split("、", 1)[-1], qa)
-        screenshot_cursor += 2
+        chunk = pick_screenshots(screenshots, module_screenshot_keywords(title), used_screenshots)
+        insert_screenshot_block(doc, chunk, title, qa)
 
-    add_heading_cn(doc, "九、输出结果字段说明", 1)
-    add_output_table(doc)
-    add_heading_cn(doc, "十、计算方法和技术特点", 1)
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、输出结果字段说明", 1)
+    add_output_table(doc, parse_output_rows(manual_text))
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、计算方法和技术特点", 1)
     add_paragraphs(doc, compose_technical_text(meta, business))
-    add_heading_cn(doc, "十一、常见问题与处理建议", 1)
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、常见问题与处理建议", 1)
     add_faq(doc)
-    add_heading_cn(doc, "十二、使用边界与注意事项", 1)
-    notes = business.get("notes") or "软件结果用于工程筛查和研究分析参考，不替代现场检测、实验认证、设备厂家设计规范或适用标准。输入气隙应来自明确的设计假设、检测数据或工程估计。"
+    section_no += 1
+    add_heading_cn(doc, f"{cn_number(section_no)}、使用边界与注意事项", 1)
+    notes = business.get("notes") or "软件输出结果应结合业务规则、原始数据和人工复核使用。涉及正式提交、合同、财务、医疗、法律、工程安全等场景时，应按适用制度或标准进行人工确认。"
     add_paragraphs(doc, notes)
-
-    if manual_text:
-        add_heading_cn(doc, "附录：原始操作手册草稿摘要", 1)
-        add_paragraphs(doc, clean_markdown(manual_text)[:2500])
 
     doc.save(str(out_path))
     qa.append(f"{'PASS' if len(screenshots) >= 7 else 'WARN'}: manual screenshot count={len(screenshots)}")
+    qa.extend(verify_manual_docx(out_path))
     return GeneratedFile("操作说明书", out_path), qa
 
 
 def compose_intro(meta: dict[str, str], business: dict[str, str]) -> str:
     industry = strip_terminal_punct(meta["industry"])
+    positioning = business.get("positioning") or ""
+    if positioning:
+        lead = positioning
+        if meta["software_name"] not in lead:
+            lead = f"{meta['software_name']}（简称：{meta['short_name']}，版本：{meta['version']}）是一款面向{industry}的软件。{lead}"
+    else:
+        lead = f"{meta['software_name']}（简称：{meta['short_name']}，版本：{meta['version']}）是一款面向{industry}的软件。"
     return (
-        f"{meta['software_name']}（简称：{meta['short_name']}，版本：{meta['version']}）是一款面向{industry}的本地运行软件。"
-        f"{business.get('positioning') or ''}\n\n"
-        "本软件针对目标业务中数据录入、过程处理、结果查看、记录保存和报告生成等需求，"
-        "提供与项目实际功能相匹配的操作入口和输出能力。"
-        "软件的工程价值在于把原本依赖经验和分散脚本的风险判断，组织成可输入、可复算、可导出、可归档的操作流程。"
+        f"{lead}\n\n"
+        "本说明书面向实际操作者，说明软件的运行环境、启动方式、主要界面、功能操作、输出结果和使用边界。"
+        "用户可依据本说明书完成基础配置、数据录入、功能执行、结果查看和资料导出。"
     )
 
 
@@ -696,15 +982,14 @@ def insert_screenshot_block(doc: Document, screenshots: list[Path], label: str, 
             qa.append(f"WARN: failed to insert screenshot {path}: {exc}")
 
 
-def add_output_table(doc: Document) -> None:
-    rows = [
-        ("pressure_kpa", "当前海拔下的标准大气压力，用于后续击穿电压计算。"),
-        ("breakdown_voltage_v", "根据帕邢模型计算得到的空气气隙击穿电压。"),
-        ("adjusted_voltage_v", "按安全系数修正后的击穿电压。"),
-        ("safety_margin_pct", "系统电压相对于修正击穿电压的安全裕度百分比。"),
-        ("critical_gap_upper_um", "指定海拔和电压下右支危险气隙上界。"),
-        ("risk_label", "软件根据裕度阈值给出的风险等级。"),
-        ("recommendation", "面向工程复核和试验验证的处理建议。"),
+def add_output_table(doc: Document, rows: list[tuple[str, str]] | None = None) -> None:
+    rows = rows or [
+        ("输入数据", "用户在界面或文件中录入的业务参数、基础数据或待处理对象。"),
+        ("处理结果", "软件按照功能逻辑计算、整理、筛选或生成的结果信息。"),
+        ("状态提示", "软件在处理成功、失败、异常或待补充时给出的提示信息。"),
+        ("导出文件", "软件生成的表格、报告、记录或其他可归档文件。"),
+        ("操作时间", "软件记录或展示的处理时间、创建时间或最近更新时间。"),
+        ("备注说明", "用户或系统对当前记录、结果或报告的补充说明。"),
     ]
     table = doc.add_table(rows=1, cols=2)
     table.style = "Table Grid"
@@ -726,12 +1011,12 @@ def add_output_table(doc: Document) -> None:
 
 def add_faq(doc: Document) -> None:
     items = [
-        ("输入海拔后结果异常怎么办？", "检查海拔单位是否为米，避免把千米或毫米误填入海拔字段。"),
-        ("气隙数据不确定时如何使用？", "建议先按设计假设或失效复盘范围设置多个气隙值，通过批量评估观察风险变化。"),
-        ("风险等级为负裕度是否等于现场必然击穿？", "不是。该结果表示模型筛查下裕度不足，应结合低压舱试验、现场检测和设备规范复核。"),
-        ("批量评估无法运行怎么办？", "检查 CSV 表头是否包含 case_id、site_name、altitude_m、gap_um、system_voltage_v 和 note。"),
-        ("生成报告后在哪里查看？", "报告文件默认保存到软件输出目录的 reports 子目录，可用本地浏览器打开。"),
-        ("软件能否替代商业仿真软件？", "不能。V1.0 定位为气隙击穿裕度筛查和报告工具，不替代完整结构、电热耦合或电弧全过程仿真。"),
+        ("软件无法启动怎么办？", "检查运行环境、启动命令、端口占用和所需依赖是否满足要求。若仍无法启动，应记录错误提示并交由开发或运维人员复核。"),
+        ("输入数据后结果异常怎么办？", "先核对字段单位、数据格式、必填项和取值范围，再重新运行。批量数据应重点检查表头、分隔符和空值。"),
+        ("处理过程提示失败怎么办？", "根据页面或命令行提示定位失败步骤，检查输入文件是否存在、是否被其他程序占用，以及输出目录是否有写入权限。"),
+        ("导出文件在哪里查看？", "导出文件通常保存在软件配置的输出目录或界面提示路径中，可按生成时间和文件名进行查找。"),
+        ("历史记录没有更新怎么办？", "检查当前操作是否已执行保存，确认本地数据库或记录文件可写，并刷新记录列表。"),
+        ("软件结果能否直接替代人工判断？", "不能。软件结果用于提高处理效率和一致性，正式决策仍应结合业务规则、原始资料和人工复核。"),
     ]
     for q, a in items:
         para = doc.add_paragraph()

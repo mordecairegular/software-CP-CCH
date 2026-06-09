@@ -137,6 +137,10 @@ def check(workdir: Path) -> dict[str, Any]:
                 warnings.append({"type": "word-consistency", "message": f"{label} 未检测到软件全称"})
             if version and version not in text:
                 warnings.append({"type": "word-consistency", "message": f"{label} 未检测到版本号"})
+            if prefix == "03":
+                artifact_hits = [item for item in ["```", "mermaid", "草稿摘要", "原始操作手册草稿摘要"] if item in text]
+                if artifact_hits:
+                    issues.append({"type": "manual-artifact", "message": "操作说明书 Word 含草稿/代码痕迹：" + "、".join(artifact_hits)})
         report = read_text(word_dir / "word_generation_report.md")
         if not report:
             warnings.append({"type": "word", "message": "缺少 Word 生成报告 word_generation_report.md"})

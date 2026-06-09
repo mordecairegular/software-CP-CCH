@@ -31,3 +31,12 @@
 - 验证方式和结果：rg 检查流程文档包含 Word 三件套；py_compile 检查新增/修改脚本；生成可分享 zip 包前排除本机绝对路径。
 - 回归场景：待补充
 - 未决问题：无
+## 2026-06-09 13:04:14 试用反馈
+
+- 用户反馈摘要：用户指出操作说明书仍有 AI 痕迹：不应把原始操作手册草稿摘要、Markdown 标题、草稿/过程信息放入 DOCX；Mermaid 等流程图代码应转换为图片插入。
+- 影响范围：未归类
+- 修订决策：修订 Word 说明书生成器：删除草稿摘要附录，禁止草稿/Markdown/Mermaid 原文进入正式说明书；新增 Mermaid 流程图转 PNG；按业务功能抽取模块，按截图文件名匹配配图；自检脚本检测说明书草稿/代码痕迹。同步更新 manual/word/delivery/PRD 规则。
+- 改动文件：tools/word_material_builder.py,tools/material_check.py,prompts/word_final_builder.md,prompts/manual_builder.md,prompts/delivery_self_check.md,references/word_delivery_rules.md,docs/PRD.md
+- 验证方式和结果：py_compile 通过；Mermaid 转 PNG 烟测通过；当前案件重新生成 Word 三件套，操作说明书不含附录、草稿、```、mermaid、# 标题符号，配图按模块匹配；material_check 仅因待确认字段保持 WARN。
+- 回归场景：待补充
+- 未决问题：无
