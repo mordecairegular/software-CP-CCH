@@ -27,7 +27,13 @@ AI_PHRASES = [
 def read_text(path: Path) -> str:
     if not path.exists():
         return ""
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk", "cp936"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -59,7 +65,30 @@ def docx_text(path: Path) -> str:
         return ""
 
 
-def check(workdir: Path) -> dict[str, Any]:
+def docx_image_count(path: Path) -> int:
+    try:
+        with zipfile.ZipFile(path) as zf:
+            return len([name for name in zf.namelist() if name.startswith("word/media/") and not name.endswith("/")])
+    except (zipfile.BadZipFile, FileNotFoundError):
+        return 0
+
+
+def text_quality_failures(label: str, text: str, *, min_cjk: int = 0) -> list[str]:
+    failures: list[str] = []
+    replacement_count = text.count("\ufffd")
+    qmark_count = text.count("?")
+    if replacement_count:
+        failures.append(f"{label} 含替换字符，疑似解码损坏，数量 {replacement_count}")
+    if re.search(r"\?{3,}", text) and qmark_count > 20:
+        failures.append(f"{label} 含大量连续问号，疑似中文被不可逆替换，数量 {qmark_count}")
+    if min_cjk:
+        cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
+        if len(text) > 1000 and cjk < min_cjk:
+            failures.append(f"{label} 中文字符数量异常偏低，疑似写入 DOCX 时编码丢失，中文数 {cjk}")
+    return failures
+
+
+def check(workdir: Path, word_dir_override: Path | None = None) -> dict[str, Any]:
     draft = workdir / "草稿"
     issues: list[dict[str, str]] = []
     warnings: list[dict[str, str]] = []
@@ -114,7 +143,7 @@ def check(workdir: Path) -> dict[str, Any]:
         if not manifest.get("files"):
             issues.append({"type": "source", "message": "代码提取清单没有文件行段"})
 
-    word_dir = workdir / "正式资料" / "word"
+    word_dir = word_dir_override or workdir / "正式资料" / "word"
     if not word_dir.exists():
         issues.append({"type": "word", "message": "缺少正式 Word 输出目录：正式资料/word"})
     else:
@@ -137,10 +166,20 @@ def check(workdir: Path) -> dict[str, Any]:
                 warnings.append({"type": "word-consistency", "message": f"{label} 未检测到软件全称"})
             if version and version not in text:
                 warnings.append({"type": "word-consistency", "message": f"{label} 未检测到版本号"})
+            if prefix == "01":
+                for failure in text_quality_failures(label, text, min_cjk=80):
+                    issues.append({"type": "word-encoding", "message": failure})
             if prefix == "03":
+                for failure in text_quality_failures(label, text, min_cjk=120):
+                    issues.append({"type": "word-encoding", "message": failure})
                 artifact_hits = [item for item in ["```", "mermaid", "草稿摘要", "原始操作手册草稿摘要"] if item in text]
                 if artifact_hits:
                     issues.append({"type": "manual-artifact", "message": "操作说明书 Word 含草稿/代码痕迹：" + "、".join(artifact_hits)})
+                image_count = docx_image_count(matches[0])
+                if image_count == 0:
+                    issues.append({"type": "manual-image", "message": "操作说明书 Word 未嵌入真实截图"})
+                elif image_count < 3:
+                    warnings.append({"type": "manual-image", "message": f"操作说明书 Word 截图数量偏少：{image_count}"})
         report = read_text(word_dir / "word_generation_report.md")
         if not report:
             warnings.append({"type": "word", "message": "缺少 Word 生成报告 word_generation_report.md"})
@@ -157,6 +196,7 @@ def check(workdir: Path) -> dict[str, Any]:
         "status": status,
         "software_name": software_name,
         "version": version,
+        "word_dir": str(word_dir),
         "issues": issues,
         "warnings": warnings,
     }
@@ -169,6 +209,7 @@ def write_md(path: Path, result: dict[str, Any]) -> None:
         f"- 结论：{result['status']}",
         f"- 软件全称：{result.get('software_name') or '未识别'}",
         f"- 版本号：{result.get('version') or '未识别'}",
+        f"- Word 目录：{result.get('word_dir') or '未记录'}",
         "",
         "## 失败项",
         "",
@@ -190,10 +231,12 @@ def write_md(path: Path, result: dict[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workdir", default="软件著作权申请资料")
+    parser.add_argument("--word-dir", help="可选：指定待检查的 Word 输出目录，默认 <workdir>/正式资料/word")
     args = parser.parse_args()
 
     workdir = Path(args.workdir)
-    result = check(workdir)
+    word_dir = Path(args.word_dir) if args.word_dir else None
+    result = check(workdir, word_dir)
     (workdir / "交付自检记录.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     write_md(workdir / "交付自检记录.md", result)
     print(f"{result['status']} material check: {workdir}")

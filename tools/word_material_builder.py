@@ -48,7 +48,31 @@ class GeneratedFile:
 def read_text(path: Path) -> str:
     if not path.exists():
         return ""
-    return path.read_text(encoding="utf-8", errors="replace")
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-8", "gb18030", "gbk", "cp936"):
+        try:
+            return raw.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def count_cjk(text: str) -> int:
+    return len(re.findall(r"[\u4e00-\u9fff]", text))
+
+
+def text_quality_issues(label: str, text: str, *, min_cjk: int = 30) -> list[str]:
+    issues: list[str] = []
+    replacement_count = text.count("\ufffd")
+    qmark_runs = re.findall(r"\?{3,}", text)
+    qmark_count = text.count("?")
+    if replacement_count:
+        issues.append(f"FAIL: {label} contains replacement characters, count={replacement_count}")
+    if qmark_runs and qmark_count > 20:
+        issues.append(f"FAIL: {label} contains suspicious question-mark mojibake, count={qmark_count}")
+    if len(text) > 200 and min_cjk and count_cjk(text) < min_cjk:
+        issues.append(f"FAIL: {label} has too few Chinese characters after generation; possible encoding loss")
+    return issues
 
 
 def safe_filename(text: str) -> str:
@@ -97,6 +121,15 @@ def is_pending(value: str) -> bool:
 
 def load_metadata(workdir: Path, args: argparse.Namespace) -> dict[str, str]:
     fields = parse_application_fields(workdir / "草稿" / "申请表信息.md")
+    business_json: dict[str, str] = {}
+    business_json_path = workdir / "草稿" / "业务理解.json"
+    if business_json_path.exists():
+        try:
+            loaded = json.loads(read_text(business_json_path))
+            if isinstance(loaded, dict):
+                business_json = {str(key): str(value) for key, value in loaded.items() if not isinstance(value, (list, dict))}
+        except json.JSONDecodeError:
+            business_json = {}
     code_manifest = workdir / "草稿" / "代码提取清单.json"
     source_lines = ""
     if code_manifest.exists():
@@ -122,16 +155,16 @@ def load_metadata(workdir: Path, args: argparse.Namespace) -> dict[str, str]:
         "first_publish": args.first_publish or pick_field(fields, ["首次发表日期"], "未发表（待确认）"),
         "rights_acquire": args.rights_acquire or pick_field(fields, ["权利取得方式"], "原始取得（待确认）"),
         "development_mode": args.development_mode or pick_field(fields, ["开发方式"], "独立开发/职务开发待确认"),
-        "dev_hardware": pick_field(fields, ["开发硬件环境"], "普通个人计算机，八吉字节以上内存"),
-        "runtime_hardware": pick_field(fields, ["运行硬件环境"], "普通个人计算机，支持本地浏览器访问"),
+        "dev_hardware": pick_field(fields, ["开发硬件环境"], "普通个人计算机，8GB 及以上内存"),
+        "runtime_hardware": pick_field(fields, ["运行硬件环境"], "普通个人计算机，本地运行环境"),
         "dev_os": pick_field(fields, ["开发操作系统"], "Windows"),
         "runtime_os": pick_field(fields, ["运行平台/操作系统"], "Windows"),
-        "dev_tools": pick_field(fields, ["开发工具", "软件开发环境/开发工具"], "Python、文本编辑器、浏览器调试工具"),
-        "support_env": pick_field(fields, ["运行支撑环境", "软件运行支撑环境/支持软件"], "Python 3.10 以上，本地浏览器"),
-        "language": pick_field(fields, ["编程语言"], "Python、HTML、CSS、JavaScript"),
+        "dev_tools": pick_field(fields, ["开发工具", "软件开发环境/开发工具"], "Python、文本编辑器、版本管理工具"),
+        "support_env": pick_field(fields, ["运行支撑环境", "软件运行支撑环境/支持软件"], "Python 3.10 以上及项目依赖库"),
+        "language": pick_field(fields, ["编程语言"], "Python"),
         "source_lines": args.source_lines or source_lines or pick_field(fields, ["源程序量"], pending_marker("源程序量")),
         "software_class": pick_field(fields, ["软件分类"], "应用软件"),
-        "industry": pick_field(fields, ["行业领域", "面向领域/行业"], "待确认"),
+        "industry": args.industry or pick_field(fields, ["行业领域", "面向领域/行业"], business_json.get("industry") or "待确认"),
         "classification_code": args.classification_code or "30200/6510（待确认）",
         "owner_category": args.owner_category or "待确认",
         "certificate_type": args.certificate_type or "待确认",
@@ -189,29 +222,39 @@ def compose_main_function_text(meta: dict[str, str], business: dict[str, str]) -
     flow = business.get("flow") or ""
     problem = business.get("core_problem") or ""
     industry = strip_terminal_punct(meta["industry"])
-    text = (
-        f"{meta['software_name']}是一款面向{industry}的工程计算与风险筛查软件。"
-        f"{base}\n\n"
-        f"软件围绕业务对象、输入数据、处理流程和输出结果组织功能，"
-        f"用于把用户在实际业务中的经验判断或重复操作转化为可输入、可处理、可复核、可留痕的软件流程。"
-        f"{problem}\n\n"
-        f"主要功能包括：{functions}\n\n"
-        f"典型使用流程为：{flow}\n\n"
-        "软件输出风险等级、安全裕度、击穿电压、气压、临界气隙上界、批量评估结果、历史记录和报告文件。"
-        "这些结果可用于项目复核、业务办理、数据整理、过程留痕、结果归档和成果转化材料整理。"
-        "软件结果用于工程筛查和研究分析参考，不替代现场检测、实验认证或适用标准。"
+    pieces = [f"{meta['software_name']}是一款面向{industry}的应用软件。"]
+    if base:
+        pieces.append(base)
+    if problem:
+        pieces.append(problem)
+    if functions:
+        pieces.append(f"主要功能包括：{functions}")
+    else:
+        pieces.append("主要功能包括数据导入、参数配置、业务处理、结果校验、日志反馈和成果导出。")
+    if flow:
+        pieces.append(f"典型使用流程为：{flow}")
+    pieces.append(
+        "软件围绕真实业务对象、输入数据、处理规则和输出成果组织功能，"
+        "用于把重复的数据处理、校验、生成和归档工作转化为可执行、可复核、可留痕的软件流程。"
     )
+    text = " ".join(pieces)
     return re.sub(r"\s+", " ", text).strip()
 
 
 def compose_technical_text(meta: dict[str, str], business: dict[str, str]) -> str:
     technical = business.get("technical") or ""
-    text = (
-        f"{technical} 软件采用本地化运行方式，前端界面、后端服务、计算模型、数据记录和报告生成模块相互配合。"
-        "核心模型包括标准大气压力估算、空气帕邢击穿电压计算、安全裕度计算、危险间隙上界求解和风险等级判定。"
-        "软件支持单点工况评估、批量数据处理、曲线和热力图显示、SQLite 本地记录、CSV 导出以及 HTML 报告生成。"
-        "界面层使用原生页面与脚本实现交互和图表绘制，服务层使用本地 HTTP 接口组织评估请求，数据层使用结构化记录保存案例结果。"
+    environment = business.get("environment") or ""
+    pieces = []
+    if technical:
+        pieces.append(technical)
+    pieces.append(
+        "软件按数据导入、参数配置、业务处理、结果生成、日志反馈和文件导出等环节组织程序模块，"
+        "通过真实项目代码中的界面、数据解析、业务处理和成果输出逻辑完成主要功能。"
     )
+    if environment:
+        pieces.append(f"运行环境口径：{environment}")
+    pieces.append(f"编程语言和支撑环境以申请表记录为准：{meta['language']}；{meta['support_env']}。")
+    text = " ".join(pieces)
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -330,7 +373,8 @@ def fill_application_table(table, meta: dict[str, str], business: dict[str, str]
     set_row_cell(table, 19, 2, meta["language"], "编程语言", qa)
     set_row_cell(table, 19, 4, only_digits_or_text(meta["source_lines"]), "源程序量", qa)
     industry = strip_terminal_punct(meta["industry"])
-    set_row_cell(table, 20, 2, truncate(f"用于{industry}的工程计算、风险筛查和报告生成。", 50), "开发目的", qa)
+    purpose = f"用于{industry}中的业务处理、数据校验、结果生成和资料归档。"
+    set_row_cell(table, 20, 2, truncate(purpose, 50), "开发目的", qa)
     set_row_cell(table, 21, 2, truncate(industry, 50), "面向领域", qa)
     set_row_cell(table, 22, 2, main_functions, "主要功能", qa)
     set_row_cell(table, 23, 2, "○APP ○游戏软件 ○教育软件 ○金融软件 ○医疗软件 ○地理信息软件 ○云计算软件 ○信息安全软件 ○大数据软件 ○人工智能软件 ○物联网软件 ●其他", "技术类别", qa)
@@ -356,6 +400,21 @@ def only_digits_or_text(text: str) -> str:
     if match:
         return match.group(0)
     return text
+
+
+def collect_document_text(doc: Document) -> str:
+    parts: list[str] = []
+    parts.extend(p.text for p in doc.paragraphs)
+    for table in doc.tables:
+        for row in table.rows:
+            parts.append("\t".join(cell.text for cell in unique_cells(row)))
+    for section in doc.sections:
+        parts.extend(p.text for p in section.header.paragraphs)
+        parts.extend(p.text for p in section.footer.paragraphs)
+        for table in list(section.header.tables) + list(section.footer.tables):
+            for row in table.rows:
+                parts.append("\t".join(cell.text for cell in unique_cells(row)))
+    return "\n".join(parts)
 
 
 def create_simple_application_doc(meta: dict[str, str], business: dict[str, str]) -> Document:
@@ -390,10 +449,8 @@ def create_simple_application_doc(meta: dict[str, str], business: dict[str, str]
 def verify_application_docx(path: Path, meta: dict[str, str]) -> list[str]:
     qa: list[str] = []
     doc = Document(str(path))
-    all_text = "\n".join(p.text for p in doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            all_text += "\n" + "\t".join(cell.text for cell in unique_cells(row))
+    all_text = collect_document_text(doc)
+    qa.extend(text_quality_issues("application docx text", all_text, min_cjk=60))
     for label, value in [
         ("软件名称", meta["software_name"]),
         ("版本号", meta["version"]),
@@ -701,6 +758,17 @@ def pick_screenshots(screenshots: list[Path], keywords: list[str], used: set[Pat
 
 def module_screenshot_keywords(title: str) -> list[str]:
     mapping = [
+        ("启动", ["start", "window", "main"]),
+        ("主界面", ["start", "window", "main", "overview"]),
+        ("添加", ["sample_file_added", "add", "file"]),
+        ("导入", ["sample_file_added", "input", "file"]),
+        ("文件", ["sample_file_added", "file"]),
+        ("转换", ["conversion_log_visible", "conversion_log", "convert", "log"]),
+        ("处理", ["conversion_log_visible", "conversion_log", "process", "log"]),
+        ("日志", ["conversion_log_visible", "conversion_log", "log"]),
+        ("输出", ["output", "result", "report", "package"]),
+        ("质检", ["report", "package", "conversion_log"]),
+        ("申报", ["report", "package", "conversion_log"]),
         ("单点", ["main_evaluation_result", "evaluation_result"]),
         ("批量", ["batch_evaluation", "batch"]),
         ("曲线", ["model_curves", "curve"]),
@@ -854,17 +922,20 @@ def insert_diagram_block(doc: Document, diagrams: list[Path], label: str, qa: li
 
 def verify_manual_docx(path: Path) -> list[str]:
     doc = Document(str(path))
-    text = "\n".join(p.text for p in doc.paragraphs)
-    for table in doc.tables:
-        for row in table.rows:
-            text += "\n" + "\t".join(cell.text for cell in row.cells)
+    text = collect_document_text(doc)
     checks: list[str] = []
+    checks.extend(text_quality_issues("manual docx text", text, min_cjk=120))
     forbidden = ["附录：原始操作手册草稿摘要", "```mermaid", "```", "草稿摘要"]
     hits = [item for item in forbidden if item in text]
     if hits:
         checks.append("FAIL: manual contains draft/code artifacts: " + "、".join(hits))
     if re.search(r"(?m)^\s*#{1,6}\s+", text):
         checks.append("FAIL: manual contains raw Markdown heading markers")
+    image_count = sum(1 for rel in doc.part.rels.values() if "image" in rel.reltype)
+    if image_count == 0:
+        checks.append("FAIL: manual contains no embedded screenshots/images")
+    elif image_count < 3:
+        checks.append(f"WARN: manual image count is low, count={image_count}")
     return checks or ["PASS: manual has no raw draft appendix or Mermaid code blocks"]
 
 
@@ -886,12 +957,17 @@ def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], busine
     add_paragraphs(doc, compose_intro(meta, business))
     section_no += 1
     add_heading_cn(doc, f"{cn_number(section_no)}、运行环境", 1)
-    add_paragraphs(doc, business.get("environment") or "本软件运行于可使用 Python 3.10 以上环境的个人计算机，并通过本地浏览器访问 Web 操作界面。")
+    add_paragraphs(doc, business.get("environment") or "本软件运行于可使用 Python 3.10 以上环境的个人计算机，通过本地桌面界面或命令行入口完成操作。")
     section_no += 1
     add_heading_cn(doc, f"{cn_number(section_no)}、软件启动与主界面总览", 1)
     add_paragraphs(doc, "用户按照软件部署说明启动程序后进入主界面。主界面通常包括功能入口、参数或数据录入区、处理结果区、记录区和导出入口；具体控件以实际截图为准。")
     used_screenshots: set[Path] = set()
-    insert_screenshot_block(doc, pick_screenshots(screenshots, ["single_case_workspace", "main_evaluation_result"], used_screenshots, mark_used=False), "主界面总览", qa)
+    insert_screenshot_block(
+        doc,
+        pick_screenshots(screenshots, ["start", "window", "main", "overview", "single_case_workspace", "main_evaluation_result"], used_screenshots),
+        "主界面总览",
+        qa,
+    )
 
     if diagrams:
         section_no += 1
@@ -905,6 +981,13 @@ def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], busine
         add_paragraphs(doc, body)
         chunk = pick_screenshots(screenshots, module_screenshot_keywords(title), used_screenshots)
         insert_screenshot_block(doc, chunk, title, qa)
+
+    remaining_screenshots = [path for path in screenshots if path not in used_screenshots]
+    if remaining_screenshots:
+        section_no += 1
+        add_heading_cn(doc, f"{cn_number(section_no)}、补充操作截图", 1)
+        add_paragraphs(doc, "以下截图用于补充展示软件运行过程中的文件导入、处理反馈、日志显示或输出结果等界面状态。")
+        insert_screenshot_block(doc, remaining_screenshots[:12], "补充操作截图", qa)
 
     section_no += 1
     add_heading_cn(doc, f"{cn_number(section_no)}、输出结果字段说明", 1)
@@ -974,6 +1057,10 @@ def insert_screenshot_block(doc: Document, screenshots: list[Path], label: str, 
             width = Inches(6.2)
             if Image:
                 with Image.open(path) as img:
+                    if img.width < 900 or img.height < 450:
+                        qa.append(f"WARN: screenshot may be too small or cropped: {path.name} {img.width}x{img.height}")
+                    if img.width / max(img.height, 1) > 3.0:
+                        qa.append(f"WARN: screenshot has very wide aspect ratio; check completeness: {path.name} {img.width}x{img.height}")
                     if img.width < img.height:
                         width = Inches(4.0)
             doc.add_picture(str(path), width=width)
@@ -1087,11 +1174,12 @@ def build_all(args: argparse.Namespace) -> int:
     qa_sections["操作说明书"] = manual_qa
 
     report_path = write_report(out_dir, generated, meta, qa_sections)
-    print(f"OK generated {len(generated)} DOCX files")
+    has_failures = any(item.startswith("FAIL") for items in qa_sections.values() for item in items)
+    print(f"{'FAIL' if has_failures else 'OK'} generated {len(generated)} DOCX files")
     print(report_path)
     for item in generated:
         print(item.path)
-    return 0
+    return 2 if has_failures else 0
 
 
 def parse_args() -> argparse.Namespace:
@@ -1110,6 +1198,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rights-acquire")
     parser.add_argument("--development-mode")
     parser.add_argument("--source-lines")
+    parser.add_argument("--industry")
     parser.add_argument("--classification-code")
     parser.add_argument("--owner-category")
     parser.add_argument("--certificate-type")
