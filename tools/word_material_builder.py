@@ -57,6 +57,15 @@ def read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
+def read_json_any(path: Path):
+    if not path.exists():
+        return None
+    try:
+        return json.loads(read_text(path))
+    except Exception:
+        return None
+
+
 def count_cjk(text: str) -> int:
     return len(re.findall(r"[\u4e00-\u9fff]", text))
 
@@ -650,6 +659,15 @@ def add_code_line(doc: Document, text: str) -> None:
 
 
 def find_screenshots(workdir: Path, explicit_dir: Path | None) -> list[Path]:
+    manifest_paths: list[Path] = []
+    if explicit_dir:
+        manifest_paths.append(explicit_dir / "screenshot_manifest.json")
+    manifest_paths.append(workdir / "截图" / "screenshot_manifest.json")
+    for manifest_path in manifest_paths:
+        manifest_files = screenshots_from_manifest(manifest_path)
+        if manifest_files is not None:
+            return manifest_files
+
     if explicit_dir:
         dirs = [explicit_dir]
     else:
@@ -668,6 +686,36 @@ def find_screenshots(workdir: Path, explicit_dir: Path | None) -> list[Path]:
     preferred_terms = ["word_", "desktop", "batch", "history", "report", "mobile", "curve"]
     files.sort(key=lambda p: (min([p.name.find(t) if t in p.name else 999 for t in preferred_terms]), p.name))
     return files
+
+
+def screenshots_from_manifest(manifest_path: Path) -> list[Path] | None:
+    manifest = read_json_any(manifest_path)
+    if manifest is None:
+        return None
+    if isinstance(manifest, dict):
+        records = manifest.get("screenshots") or manifest.get("items") or []
+    elif isinstance(manifest, list):
+        records = manifest
+    else:
+        records = []
+    selected: list[tuple[int, str, Path]] = []
+    for index, item in enumerate(records):
+        if not isinstance(item, dict):
+            continue
+        if item.get("accepted") is False or item.get("used_in_word") is False:
+            continue
+        raw_path = item.get("file") or item.get("path") or item.get("filename")
+        if not raw_path:
+            continue
+        path = Path(str(raw_path))
+        if not path.is_absolute():
+            path = manifest_path.parent / path
+        if path.exists():
+            order = int(item.get("order") or item.get("sort") or index)
+            step = str(item.get("flow_step") or item.get("label") or path.name)
+            selected.append((order, step, path))
+    selected.sort(key=lambda row: (row[0], row[1], row[2].name))
+    return [path for _, _, path in selected]
 
 
 def screenshot_dimensions(path: Path) -> tuple[int, int] | None:

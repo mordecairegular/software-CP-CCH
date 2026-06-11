@@ -5,6 +5,8 @@
 ## 设计重点
 
 - 软著不是专利：重点是软件表达、真实源码、文档鉴别材料、权属和一致性。
+- 先确认申报对象：一个仓库可能有多个可申请软件候选，必须先做候选挖掘和申报边界确认。
+- 先像软件再像材料：需要本轮开发时，必须做产品设计 brief、UI 技术栈选择、截图验收，再进入软著材料。
 - 不伪造代码：源程序鉴别材料必须来自真实项目或本轮实际开发的软件。
 - 不堆 AI 味文案：说明书必须能回溯到真实界面、真实对象、真实操作和真实反馈。
 - 交付 Word 三件套：最终应生成申请表、源程序鉴别材料、操作说明书 `.docx`，并做表格回读与版式核验。
@@ -57,6 +59,12 @@ python tools/word_material_builder.py --workdir 软件著作权申请资料
 
 如有代理提供的样本文档或模板，使用 `--template-dir <样本文档目录>`，生成后查看 `正式资料/word/word_generation_report.md`。
 
+如有已经认可的历史三件套母版，优先使用：
+
+```bash
+python tools/word_material_builder.py --workdir 软件著作权申请资料 --reference-word-dir <已认可三件套目录>
+```
+
 ## 分发给其他 Codex 用户
 
 把整个 `software-CP-CCH` 目录打包发给对方，而不是只发 `SKILL.md`。接收方解压到：
@@ -72,3 +80,14 @@ C:\Users\<用户名>\.codex\skills\software-CP-CCH
 ```
 
 详细步骤见 [INSTALL.md](INSTALL.md)。
+
+## 发布检查
+
+发布或全局替换前建议检查：
+
+- `python -m py_compile tools/*.py`
+- `git status --short` 干净。
+- 不包含案件输出、`__pycache__`、`.venv`、临时 Word 锁文件。
+- `SKILL.md`、`README.md`、`INSTALL.md` 与试用修订记录口径一致。
+- 本地安装目录与发布 clone 的关键文件哈希一致。
+- 无历史案件名称、联系人、电话、证件号、样本文档正文残留。

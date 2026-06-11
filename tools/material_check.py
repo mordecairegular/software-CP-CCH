@@ -36,7 +36,7 @@ def read_text(path: Path) -> str:
     return raw.decode("utf-8", errors="replace")
 
 
-def read_json(path: Path) -> dict[str, Any]:
+def read_json(path: Path) -> Any:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8-sig"))
@@ -49,7 +49,29 @@ def app_field(text: str, name: str) -> str:
 
 
 def has_confirmation(workdir: Path, rel: str, key: str) -> bool:
-    return bool(read_json(workdir / rel).get(key))
+    data = read_json(workdir / rel)
+    return isinstance(data, dict) and bool(data.get(key))
+
+
+def screenshot_manifest_records(path: Path) -> list[dict[str, Any]]:
+    data = read_json(path)
+    if isinstance(data, dict):
+        records = data.get("screenshots") or data.get("items") or []
+    elif isinstance(data, list):
+        records = data
+    else:
+        records = []
+    return [item for item in records if isinstance(item, dict)]
+
+
+def accepted_word_screenshots(workdir: Path) -> list[dict[str, Any]]:
+    manifest_path = workdir / "截图" / "screenshot_manifest.json"
+    records = screenshot_manifest_records(manifest_path)
+    return [
+        item
+        for item in records
+        if item.get("accepted") is not False and item.get("used_in_word") is not False
+    ]
 
 
 def docx_text(path: Path) -> str:
@@ -94,6 +116,7 @@ def check(workdir: Path, word_dir_override: Path | None = None) -> dict[str, Any
     warnings: list[dict[str, str]] = []
 
     required = [
+        draft / "软著候选挖掘.md",
         draft / "业务理解.md",
         draft / "权属与AI辅助审计.md",
         draft / "申请表信息.md",
@@ -104,7 +127,22 @@ def check(workdir: Path, word_dir_override: Path | None = None) -> dict[str, Any
         if not path.exists():
             issues.append({"type": "missing", "message": f"缺少 {path}"})
 
+    candidate_json = workdir / "analysis" / "候选软件挖掘.json"
+    if not candidate_json.exists():
+        issues.append({"type": "candidate", "message": "缺少 analysis/候选软件挖掘.json，无法确认申报对象边界"})
+    else:
+        candidate_data = read_json(candidate_json)
+        if not isinstance(candidate_data, dict):
+            issues.append({"type": "candidate", "message": "analysis/候选软件挖掘.json 不是对象结构"})
+        else:
+            candidates = candidate_data.get("candidates") or []
+            if not candidates:
+                issues.append({"type": "candidate", "message": "候选软件挖掘记录没有 candidates"})
+            if not any(item.get("recommended") for item in candidates if isinstance(item, dict)):
+                warnings.append({"type": "candidate", "message": "候选软件挖掘记录没有 recommended 候选"})
+
     confirmations = [
+        ("草稿/申报对象确认.json", "candidate_confirmed", "申报对象未确认"),
         ("草稿/业务理解确认.json", "business_confirmed", "业务理解未确认"),
         ("草稿/代码选择确认.json", "code_selection_confirmed", "代码选择未确认"),
         ("草稿/申请表字段确认.json", "application_fields_confirmed", "申请表字段未确认"),
@@ -112,7 +150,23 @@ def check(workdir: Path, word_dir_override: Path | None = None) -> dict[str, Any
     ]
     for rel, key, msg in confirmations:
         if not has_confirmation(workdir, rel, key):
-            warnings.append({"type": "confirmation", "message": msg})
+            severity = issues if key == "candidate_confirmed" else warnings
+            severity.append({"type": "confirmation", "message": msg})
+
+    mvp_record = draft / "MVP开发记录.md"
+    if mvp_record.exists():
+        ui_design = draft / "UI设计方案.md"
+        if not ui_design.exists():
+            issues.append({"type": "ui-design", "message": "本轮新开发/改造软件缺少 草稿/UI设计方案.md"})
+        if not has_confirmation(workdir, "草稿/UI设计确认.json", "ui_design_confirmed"):
+            issues.append({"type": "ui-design", "message": "本轮新开发/改造软件缺少 UI 设计确认记录"})
+        screenshot_manifest = workdir / "截图" / "screenshot_manifest.json"
+        if not screenshot_manifest.exists():
+            issues.append({"type": "ui-screenshot", "message": "本轮新开发/改造软件缺少 截图/screenshot_manifest.json"})
+        else:
+            accepted = accepted_word_screenshots(workdir)
+            if len(accepted) < 5:
+                issues.append({"type": "ui-screenshot", "message": f"验收且用于 Word 的截图少于 5 张：{len(accepted)}"})
 
     app_text = read_text(draft / "申请表信息.md")
     software_name = app_field(app_text, "软件全称")
@@ -131,11 +185,13 @@ def check(workdir: Path, word_dir_override: Path | None = None) -> dict[str, Any
         phrase_hits = [p for p in AI_PHRASES if p in manual]
         if len(phrase_hits) >= 3:
             warnings.append({"type": "ai-style", "message": "操作手册存在较多制式/营销化短语：" + "、".join(phrase_hits[:8])})
-        if "【截图预留" not in manual and not any((workdir / "截图").glob("*")):
-            warnings.append({"type": "screenshot", "message": "未发现截图，也未发现可见截图预留文字"})
+        if not any((workdir / "截图").glob("*")):
+            warnings.append({"type": "screenshot", "message": "未发现截图；截图缺口只能留在草稿中，正式 Word 不得使用占位截图"})
 
     manifest = read_json(draft / "代码提取清单.json")
-    if manifest:
+    if manifest and not isinstance(manifest, dict):
+        issues.append({"type": "source", "message": "代码提取清单 JSON 不是对象结构"})
+    elif manifest:
         if software_name and manifest.get("software_name") != software_name:
             warnings.append({"type": "consistency", "message": "代码提取清单的软件名与申请表不一致"})
         if version and manifest.get("version") != version:

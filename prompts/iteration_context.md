@@ -24,13 +24,19 @@
    - 权属或证明材料缺失。
    - AI 味或功能描述空泛。
    - 项目事实错误。
+   - 申报对象不准或候选边界错误。
+   - UI 简陋、截图不能证明真实任务流。
 3. 对应读取相关 prompt：
    - 字段问题：`application_fields.md`
    - 手册问题：`manual_builder.md`
    - 源码问题：`source_material_builder.md`
    - 权属问题：`rights_ai_audit.md`
+   - 申报对象/包装问题：`software_concept_mining.md` 和 `business_understanding.md`
+   - UI/截图问题：`product_ui_design_gate.md` 和 `manual_builder.md`
 4. 生成修订版和 `草稿/修订记录.md`。
 5. 重新运行 `delivery_self_check.md`。
+
+用户指出功能不存在、事实错误、材料太泛、申报对象不准或 UI/截图太低质时，必须回到候选软件挖掘、业务理解和产品设计复核，而不是只局部改写正文。
 
 ## 修订记录格式
 
@@ -42,4 +48,3 @@
 - 未解决风险：
 - 下一步：
 ```
-

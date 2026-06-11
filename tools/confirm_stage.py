@@ -11,7 +11,9 @@ from typing import Any
 
 
 STAGE_FILES = {
+    "candidate": ("草稿/申报对象确认.json", "candidate_confirmed"),
     "business": ("草稿/业务理解确认.json", "business_confirmed"),
+    "ui-design": ("草稿/UI设计确认.json", "ui_design_confirmed"),
     "code-selection": ("草稿/代码选择确认.json", "code_selection_confirmed"),
     "application-fields": ("草稿/申请表字段确认.json", "application_fields_confirmed"),
     "screenshot-method": ("截图方式确认.json", "screenshot_method_confirmed"),

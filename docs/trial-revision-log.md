@@ -40,3 +40,13 @@
 - 验证方式和结果：py_compile 通过；Mermaid 转 PNG 烟测通过；当前案件重新生成 Word 三件套，操作说明书不含附录、草稿、```、mermaid、# 标题符号，配图按模块匹配；material_check 仅因待确认字段保持 WARN。
 - 回归场景：待补充
 - 未决问题：无
+
+## 2026-06-11 试用反馈：候选挖掘、申报联系与 UI 产品化不足
+
+- 用户反馈摘要：用户认为上一轮用 skill 挖掘不充分，软件包装不用心，与实际申报联系弱，UI 简陋且缺少审美；要求吸收公开软件工程学、UI 设计学经验，改良后全局安装并替换旧版本。
+- 影响范围：主流程、候选挖掘、MVP 开发、产品设计、项目扫描、自检、Word 截图来源、安装发布说明。
+- 修订决策：保留为 Codex skill，不改成独立 plugin/MCP/Agents SDK 应用；新增 agentic 工作方式、软著候选挖掘与灵魂审查、产品化与 UI 设计门禁、工程/UI 规则参考、截图 manifest 和申报对象确认硬门槛。
+- 改动文件：`SKILL.md`、`README.md`、`INSTALL.md`、`docs/PRD.md`、`prompts/agentic_orchestration.md`、`prompts/software_concept_mining.md`、`prompts/product_ui_design_gate.md`、`prompts/intake.md`、`prompts/project_scan.md`、`prompts/software_ideation_mvp.md`、`prompts/business_understanding.md`、`prompts/code_evidence_selection.md`、`prompts/application_fields.md`、`prompts/manual_builder.md`、`prompts/delivery_self_check.md`、`prompts/iteration_context.md`、`prompts/correction_handler.md`、`prompts/word_final_builder.md`、`references/product_engineering_design_rules.md`、`references/quality_rules.md`、`tools/project_audit.py`、`tools/material_check.py`、`tools/word_material_builder.py`。
+- 验证方式和结果：`py_compile` 通过 `project_audit.py`、`material_check.py`、`word_material_builder.py`、`confirm_stage.py`；`project_audit.py` 烟测能识别样例项目的原生 Tkinter UI 风险；`rg` 确认候选挖掘、申报对象确认、UI 设计、截图 manifest 和母版复用规则均接入主流程、prompt 与脚本。
+- 回归场景：无现成软件时必须先比较 MVP 候选；现有仓库必须先确认申报对象；本轮开发软件必须生成 UI 设计方案和截图 manifest；裸 Tkinter/简陋 UI 不得默认通过；Word 只插入已验收截图。
+- 未决问题：后续可增加专门的 `tools/screenshot_manifest_check.py` 和 UI 截图像素级检测。

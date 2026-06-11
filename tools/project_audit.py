@@ -67,6 +67,30 @@ RISK_PATTERNS = [
     ("test_account", re.compile(r"(admin123|test123|demo123|root/root)", re.I)),
 ]
 
+UI_DEP_HINTS = {
+    "react": {"react", "react-dom", "next", "vite"},
+    "vue": {"vue", "nuxt", "vite"},
+    "svelte": {"svelte", "sveltekit"},
+    "shadcn": {"shadcn", "class-variance-authority", "radix-ui", "@radix-ui/react-dialog"},
+    "material-ui": {"@mui/material", "@material-ui/core"},
+    "ant-design": {"antd", "@ant-design/icons"},
+    "fluent-ui": {"@fluentui/react", "@fluentui/react-components"},
+    "tailwind": {"tailwindcss"},
+    "charting": {"echarts", "recharts", "plotly.js", "chart.js"},
+    "map-gis": {"leaflet", "openlayers", "mapbox-gl", "cesium"},
+    "electron-tauri": {"electron", "@tauri-apps/api"},
+}
+
+PY_UI_IMPORTS = {
+    "tkinter": re.compile(r"^\s*(import\s+tkinter|from\s+tkinter\s+import)", re.M),
+    "customtkinter": re.compile(r"^\s*(import\s+customtkinter|from\s+customtkinter\s+import)", re.M),
+    "ttkbootstrap": re.compile(r"^\s*(import\s+ttkbootstrap|from\s+ttkbootstrap\s+import)", re.M),
+    "pyside6": re.compile(r"^\s*(import\s+PySide6|from\s+PySide6\s+import)", re.M),
+    "pyqt": re.compile(r"^\s*(import\s+PyQt|from\s+PyQt[56]\s+import)", re.M),
+    "streamlit": re.compile(r"^\s*import\s+streamlit|^\s*from\s+streamlit\s+import", re.M),
+    "gradio": re.compile(r"^\s*import\s+gradio|^\s*from\s+gradio\s+import", re.M),
+}
+
 
 def is_ignored(path: Path) -> bool:
     return any(part in IGNORE_DIRS for part in path.parts)
@@ -158,6 +182,43 @@ def package_facts(root: Path) -> dict[str, Any]:
     return {}
 
 
+def detect_ui_stack(root: Path, code_files: list[Path], package: dict[str, Any]) -> dict[str, Any]:
+    deps = set(package.get("dependencies") or [])
+    stack: list[str] = []
+    evidence: list[str] = []
+    for label, hints in UI_DEP_HINTS.items():
+        matched = sorted(deps & hints)
+        if matched:
+            stack.append(label)
+            evidence.append(f"{label}: package dependencies {', '.join(matched[:6])}")
+
+    py_hits: dict[str, list[str]] = {}
+    for path in code_files[:300]:
+        if path.suffix.lower() != ".py":
+            continue
+        text = read_text(path, limit=160_000)
+        for label, pattern in PY_UI_IMPORTS.items():
+            if pattern.search(text):
+                py_hits.setdefault(label, []).append(rel(path, root))
+    for label, paths in py_hits.items():
+        stack.append(label)
+        evidence.append(f"{label}: {', '.join(paths[:8])}")
+
+    risks: list[str] = []
+    if "tkinter" in py_hits and not any(label in py_hits for label in ("customtkinter", "ttkbootstrap")):
+        risks.append("检测到原生 Tkinter，但未检测到 CustomTkinter/ttkbootstrap/PySide/PyQt 等视觉增强线索；若为正式 GUI，应补 UI 设计和视觉 QA。")
+    if package and not any(label in stack for label in ("shadcn", "material-ui", "ant-design", "fluent-ui", "tailwind")) and any(label in stack for label in ("react", "vue", "svelte")):
+        risks.append("检测到 Web 前端框架，但未检测到明确组件库/设计系统依赖；应检查 UI 是否存在自造低质控件。")
+    if not stack:
+        risks.append("未识别明显 UI 技术栈；如本轮需要截图说明书，应确认是否有可运行界面或可视化入口。")
+
+    return {
+        "stack_hints": sorted(set(stack)),
+        "evidence": evidence,
+        "risks": risks,
+    }
+
+
 def scan_risks(path: Path) -> list[dict[str, str]]:
     findings: list[dict[str, str]] = []
     try:
@@ -208,6 +269,7 @@ def audit(root: Path) -> dict[str, Any]:
 
     readmes = [p for p in doc_files if p.name.lower().startswith("readme")]
     package = package_facts(root)
+    ui_design = detect_ui_stack(root, code_files, package)
 
     return {
         "project_root": str(root),
@@ -224,6 +286,7 @@ def audit(root: Path) -> dict[str, Any]:
         "readme_files": [rel(p, root) for p in readmes[:10]],
         "document_files": [rel(p, root) for p in doc_files[:50]],
         "screenshot_candidates": [rel(p, root) for p in image_files[:50]],
+        "ui_design": ui_design,
         "code_candidates": candidates[:200],
         "risk_findings": risks[:80],
     }
@@ -264,6 +327,15 @@ def write_md(path: Path, data: dict[str, Any]) -> None:
     lines.extend(["", "## 代码类型分布", ""])
     for key, value in sorted(s["categories"].items()):
         lines.append(f"- {key}: {value}")
+
+    lines.extend(["", "## UI / 产品化线索", ""])
+    ui_design = data.get("ui_design") or {}
+    stack_hints = ui_design.get("stack_hints") or []
+    lines.append(f"- UI 栈线索：{', '.join(stack_hints) if stack_hints else '未识别'}")
+    for item in ui_design.get("evidence") or []:
+        lines.append(f"- 证据：{item}")
+    for item in ui_design.get("risks") or []:
+        lines.append(f"- 风险：{item}")
 
     lines.extend(["", "## 代码抽取候选（前 40）", ""])
     for item in data["code_candidates"][:40]:

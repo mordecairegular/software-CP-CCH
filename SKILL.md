@@ -20,20 +20,30 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch
 - **迭代/补正**：用户已有草稿、退回意见、代理反馈或上一轮输出，优先按迭代流程处理，不要默认从头重跑。
 - **试用修订**：用户在试用本 skill/agent 时指出流程、提示词、脚本、质量门槛或输出体验问题，先 `Read prompts/trial_revision_loop.md`，记录后再改 skill。
 
+## Agentic 工作方式
+
+- 采用“案件负责人”模式：先建立案件状态，记录路线、输入、假设、当前阶段、待确认项和输出文件。
+- 采用“证据链优先”：任何业务功能、申请字段、手册描述、源码材料都要能回溯到项目文件、截图、用户确认或脚本输出。
+- 采用“先并行收集，后串行定稿”：项目扫描、依赖/许可证检查、截图盘点、风险词搜索可并行；候选确认、权属结论、代码抽取、正式 Word 生成必须按门禁顺序推进。
+- 如果可用子代理，按 `prompts/agentic_orchestration.md` 拆分角色；如果没有真实子代理，也按角色分段执行，不假装已经完成独立审查。
+- 明确停止点：申报对象、业务理解、申请字段、代码选择、截图方式、正式 Word 生成前都要确认。用户明确要求直接执行时，也要在交付说明中记录采用的假设和选择理由。
+
 ## 主流程
 
 1. `Read prompts/intake.md`：确认路线、申请主体、项目输入、是否已有软件。
-2. 如无软件，`Read prompts/software_ideation_mvp.md`：收敛可申请 MVP，开发前设质量门槛。
-3. `Read prompts/project_scan.md`：扫描源码、文档、截图和运行证据；可运行 `tools/project_audit.py`。
-4. `Read prompts/rights_ai_audit.md`：检查独立开发、权属、开源依赖、AI 辅助开发和敏感信息风险。
-5. `Read prompts/business_understanding.md`：形成业务理解和申请口径；必要时做外部行业调研，但不能编造项目不存在的功能。
-6. `Read prompts/code_evidence_selection.md`：选择可回溯源码，生成并确认代码抽取清单。
-7. `Read prompts/application_fields.md`：整理申请表填报辅助信息。
-8. `Read prompts/manual_builder.md`：生成操作手册/说明书草稿，插入真实截图或可见占位。
-9. `Read prompts/source_material_builder.md`：生成源程序鉴别材料；可运行 `tools/source_extract.py`。
-10. `Read prompts/word_final_builder.md`：生成最终 Word 三件套：申请表、源程序鉴别材料、操作说明书；如用户提供代理认可或历史已通过的三件套目录，必须优先用 `tools/word_material_builder.py --reference-word-dir <参考word目录>` 复制母版并回填本案字段，再做表格回读、截图和版式核验。
-11. `Read prompts/delivery_self_check.md`：三轮自检；可运行 `tools/material_check.py`。正式交付前必须同时检查 Markdown 草稿和 Word 文件。
-12. 如用户反馈的是 skill/agent 自身改进，`Read prompts/trial_revision_loop.md`：追加试用修订记录；可运行 `tools/revision_log.py`。
+2. 如有现有项目，`Read prompts/project_scan.md`：扫描源码、文档、截图和运行证据；可运行 `tools/project_audit.py`。
+3. `Read prompts/software_concept_mining.md`：做候选软件挖掘、申报对象确认与灵魂审查，形成候选矩阵；不要在方向未审清时急着开发或包装。
+4. 如无软件或现有成果深度不足，`Read prompts/software_ideation_mvp.md`：收敛可申请 MVP，并先过产品化与工程闭环门槛。
+5. 如需要开发/改造 UI，`Read prompts/product_ui_design_gate.md`：生成设计 brief、技术栈选择、关键屏幕和截图计划；粗糙裸 UI 不得进入正式材料。
+6. `Read prompts/rights_ai_audit.md`：检查独立开发、权属、开源依赖、AI 辅助开发和敏感信息风险。
+7. `Read prompts/business_understanding.md`：形成业务理解和申请口径；必要时做外部行业调研，但不能编造项目不存在的功能。
+8. `Read prompts/code_evidence_selection.md`：选择可回溯源码，生成并确认代码抽取清单。
+9. `Read prompts/application_fields.md`：整理申请表填报辅助信息。
+10. `Read prompts/manual_builder.md`：生成操作手册/说明书草稿，插入真实截图并记录截图缺口；正式 Word 不得使用占位截图。
+11. `Read prompts/source_material_builder.md`：生成源程序鉴别材料；可运行 `tools/source_extract.py`。
+12. `Read prompts/word_final_builder.md`：生成最终 Word 三件套：申请表、源程序鉴别材料、操作说明书；如用户提供代理认可或历史已通过的三件套目录，必须优先用 `tools/word_material_builder.py --reference-word-dir <参考word目录>` 复制母版并回填本案字段，再做表格回读、截图和版式核验。
+13. `Read prompts/delivery_self_check.md`：三轮自检；可运行 `tools/material_check.py`。正式交付前必须同时检查 Markdown 草稿和 Word 文件。
+14. 如用户反馈的是 skill/agent 自身改进，`Read prompts/trial_revision_loop.md`：追加试用修订记录；可运行 `tools/revision_log.py`。
 
 ## 输出目录
 
@@ -58,6 +68,9 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch
 - **真实性门禁**：源代码材料必须来自真实项目或本轮实际开发项目；禁止 AI 编造“源代码鉴别材料”。
 - **AI 辅助门禁**：AI 参与开发时，必须记录人工需求定义、选择、修改、整合、测试和责任承担证据；不得伪称全人工开发。
 - **代码质量门禁**：若软件尚未开发，必须先完成可运行、可截图、可解释、可测试的最小软件；禁止为凑页数生成低质冗余代码。
+- **软著灵魂门禁**：候选软件必须说清真实问题、目标用户、使用地点、使用时机、输入输出、工程实践价值和申报材料联系。若只能说“提高效率、智能管理、一站式平台”，不得进入开发或正式材料。
+- **申报对象门禁**：项目扫描后必须先产出候选软件挖掘记录，并确认本轮申报对象。未比较候选、未说明申报边界、未获得用户或上下文确认时，不得进入申请表、操作手册、源程序鉴别材料或 Word 生成。
+- **产品化/UI 门禁**：新开发或改造软件不得默认生成粗糙裸 UI。应优先使用成熟组件库和设计系统，形成主界面、输入/配置、处理反馈、结果/导出、日志/异常等关键状态；截图必须能证明真实任务流。
 - **一致性门禁**：软件全称、简称、版本号、著作权人、日期、页眉、手册标题、申请表辅助信息必须一致。
 - **Word 交付门禁**：最终不能只交 Markdown。申请表、源程序鉴别材料、操作说明书必须生成 `.docx`；申请表模板填充要按标签/合并单元格定位并写后回读，不能盲填坐标；源代码页数/行数必须来自真实源码；操作说明书截图必须真实、完整、清晰。
 - **Word 母版门禁**：用户指定参考 Word 三件套时，不得自行退化生成简化申请表或任意改写版式。应复制参考申请表母版，按标签/合并单元格回填；操作说明书要对齐参考标题风格、截图数量和填报口径。过程版目录可保留，但默认 `正式资料/word` 必须指向最终对标版。
@@ -72,5 +85,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch
 - 质量与反低质 AI 规则：`references/quality_rules.md`
 - 字段、清单和文档模板：`references/templates.md`
 - Word 三件套交付规则：`references/word_delivery_rules.md`
+- 工程实践与 UI 设计规则：`references/product_engineering_design_rules.md`
 - 外部项目调研摘记：`references/external_research_notes.md`
+- Agentic 编排协议：`prompts/agentic_orchestration.md`
 - 试用修订沉淀规则：`prompts/trial_revision_loop.md`
