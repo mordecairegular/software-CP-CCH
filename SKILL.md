@@ -31,7 +31,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch
 7. `Read prompts/application_fields.md`：整理申请表填报辅助信息。
 8. `Read prompts/manual_builder.md`：生成操作手册/说明书草稿，插入真实截图或可见占位。
 9. `Read prompts/source_material_builder.md`：生成源程序鉴别材料；可运行 `tools/source_extract.py`。
-10. `Read prompts/word_final_builder.md`：生成最终 Word 三件套：申请表、源程序鉴别材料、操作说明书；可运行 `tools/word_material_builder.py`，并做表格回读、截图和版式核验。
+10. `Read prompts/word_final_builder.md`：生成最终 Word 三件套：申请表、源程序鉴别材料、操作说明书；如用户提供代理认可或历史已通过的三件套目录，必须优先用 `tools/word_material_builder.py --reference-word-dir <参考word目录>` 复制母版并回填本案字段，再做表格回读、截图和版式核验。
 11. `Read prompts/delivery_self_check.md`：三轮自检；可运行 `tools/material_check.py`。正式交付前必须同时检查 Markdown 草稿和 Word 文件。
 12. 如用户反馈的是 skill/agent 自身改进，`Read prompts/trial_revision_loop.md`：追加试用修订记录；可运行 `tools/revision_log.py`。
 
@@ -60,6 +60,7 @@ allowed-tools: Read, Write, Edit, Grep, Glob, Bash, WebSearch
 - **代码质量门禁**：若软件尚未开发，必须先完成可运行、可截图、可解释、可测试的最小软件；禁止为凑页数生成低质冗余代码。
 - **一致性门禁**：软件全称、简称、版本号、著作权人、日期、页眉、手册标题、申请表辅助信息必须一致。
 - **Word 交付门禁**：最终不能只交 Markdown。申请表、源程序鉴别材料、操作说明书必须生成 `.docx`；申请表模板填充要按标签/合并单元格定位并写后回读，不能盲填坐标；源代码页数/行数必须来自真实源码；操作说明书截图必须真实、完整、清晰。
+- **Word 母版门禁**：用户指定参考 Word 三件套时，不得自行退化生成简化申请表或任意改写版式。应复制参考申请表母版，按标签/合并单元格回填；操作说明书要对齐参考标题风格、截图数量和填报口径。过程版目录可保留，但默认 `正式资料/word` 必须指向最终对标版。
 - **编码与乱码门禁**：所有中文草稿、生成脚本、QA 脚本和 Word 生成过程必须使用 UTF-8 或显式编码回退读取；不得通过 PowerShell 管道/here-string 直接执行含大量中文常量的临时脚本来生成 DOCX。最终 `.docx` 必须检查连续问号、替换字符、中文字符数量异常和页眉页脚乱码；一旦出现 `???`、`�` 或正文中文明显丢失，交付结论必须为 FAIL。
 - **跨项目残留门禁**：通用生成器不得保留某一历史项目的专用技术术语、模型、输出字段或截图关键词作为默认正文。申请表“主要功能、技术特点、开发目的”和操作说明书正文必须优先来自本项目业务理解、操作手册和真实源码证据；缺省文本只能使用通用业务处理表述。
 - **用户确认门禁**：业务理解、申请字段、代码选择、截图方式、Markdown 草稿进入正式资料前都应停下让用户确认。

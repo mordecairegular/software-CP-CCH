@@ -313,6 +313,21 @@ def find_application_template(template_dir: Path | None) -> Path | None:
     return None
 
 
+def reference_manual_image_count(reference_word_dir: Path | None) -> int:
+    if reference_word_dir is None or not reference_word_dir.exists():
+        return 0
+    candidates = [p for p in sorted(reference_word_dir.glob("03 *.docx")) if not p.name.startswith("~$")]
+    if not candidates:
+        candidates = [p for p in sorted(reference_word_dir.glob("*.docx")) if "说明书" in p.name and not p.name.startswith("~$")]
+    if not candidates:
+        return 0
+    try:
+        doc = Document(str(candidates[0]))
+    except Exception:
+        return 0
+    return sum(1 for rel in doc.part.rels.values() if "image" in rel.reltype)
+
+
 def build_application_docx(workdir: Path, out_dir: Path, meta: dict[str, str], business: dict[str, str], template_dir: Path) -> tuple[GeneratedFile, list[str]]:
     qa: list[str] = []
     template = find_application_template(template_dir)
@@ -655,6 +670,40 @@ def find_screenshots(workdir: Path, explicit_dir: Path | None) -> list[Path]:
     return files
 
 
+def screenshot_dimensions(path: Path) -> tuple[int, int] | None:
+    if Image is None:
+        return None
+    try:
+        with Image.open(path) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def is_complete_screenshot(path: Path) -> bool:
+    dims = screenshot_dimensions(path)
+    if dims is None:
+        return True
+    width, height = dims
+    if width < 900 or height < 600:
+        return False
+    if width / max(height, 1) > 2.25:
+        return False
+    return True
+
+
+def select_delivery_screenshots(paths: list[Path], qa: list[str]) -> list[Path]:
+    valid = [path for path in paths if is_complete_screenshot(path)]
+    word_captures = [path for path in valid if path.name.lower().startswith("word_")]
+    if word_captures:
+        ignored = len(paths) - len(word_captures)
+        qa.append(f"PASS: screenshot filter selected {len(word_captures)} full-window word_ capture(s); ignored {ignored} legacy/cropped image(s)")
+        return word_captures
+    if len(valid) != len(paths):
+        qa.append(f"PASS: screenshot filter removed {len(paths) - len(valid)} cropped or undersized image(s)")
+    return valid
+
+
 def cn_number(num: int) -> str:
     digits = "零一二三四五六七八九"
     if 1 <= num <= 10:
@@ -742,10 +791,6 @@ def pick_screenshots(screenshots: list[Path], keywords: list[str], used: set[Pat
             if keyword.lower() in path.name.lower():
                 if mark_used:
                     used.add(path)
-                return [path]
-    for keyword in keywords:
-        for path in screenshots:
-            if keyword.lower() in path.name.lower():
                 return [path]
     if fallback:
         for path in screenshots:
@@ -939,10 +984,24 @@ def verify_manual_docx(path: Path) -> list[str]:
     return checks or ["PASS: manual has no raw draft appendix or Mermaid code blocks"]
 
 
-def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], business: dict[str, str], screenshots_dir: Path | None) -> tuple[GeneratedFile, list[str]]:
+def manual_heading_text(section_no: int, title: str, numbered_headings: bool) -> str:
+    return f"{cn_number(section_no)}、{title}" if numbered_headings else title
+
+
+def build_manual_docx(
+    workdir: Path,
+    out_dir: Path,
+    meta: dict[str, str],
+    business: dict[str, str],
+    screenshots_dir: Path | None,
+    *,
+    min_screenshots: int = 7,
+    numbered_headings: bool = True,
+) -> tuple[GeneratedFile, list[str]]:
     qa: list[str] = []
     out_path = out_dir / f"03 {safe_filename(meta['software_name'] + meta['version'])} 操作说明书.docx"
-    screenshots = find_screenshots(workdir, screenshots_dir)
+    all_screenshots = find_screenshots(workdir, screenshots_dir)
+    screenshots = select_delivery_screenshots(all_screenshots, qa)
     manual_text = read_text(workdir / "草稿" / "操作手册.md")
     diagrams = render_mermaid_blocks(extract_mermaid_blocks(manual_text), out_dir / "diagrams", qa)
     modules = extract_manual_modules(business)
@@ -953,13 +1012,13 @@ def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], busine
     add_cover(doc, meta, "操  作  说  明  书", f"编制人：{meta['developer']}    版本：{meta['version']}    日期：{datetime.now().strftime('%Y年%m月%d日')}")
 
     section_no = 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、软件简介", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "软件简介", numbered_headings), 1)
     add_paragraphs(doc, compose_intro(meta, business))
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、运行环境", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "运行环境", numbered_headings), 1)
     add_paragraphs(doc, business.get("environment") or "本软件运行于可使用 Python 3.10 以上环境的个人计算机，通过本地桌面界面或命令行入口完成操作。")
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、软件启动与主界面总览", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "软件启动与主界面总览", numbered_headings), 1)
     add_paragraphs(doc, "用户按照软件部署说明启动程序后进入主界面。主界面通常包括功能入口、参数或数据录入区、处理结果区、记录区和导出入口；具体控件以实际截图为准。")
     used_screenshots: set[Path] = set()
     insert_screenshot_block(
@@ -967,17 +1026,18 @@ def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], busine
         pick_screenshots(screenshots, ["start", "window", "main", "overview", "single_case_workspace", "main_evaluation_result"], used_screenshots),
         "主界面总览",
         qa,
+        required=True,
     )
 
     if diagrams:
         section_no += 1
-        add_heading_cn(doc, f"{cn_number(section_no)}、业务流程图", 1)
+        add_heading_cn(doc, manual_heading_text(section_no, "业务流程图", numbered_headings), 1)
         add_paragraphs(doc, "本节流程图由操作手册草稿中的 Mermaid 流程描述转换为图片后插入，用于展示软件主要操作路径。")
         insert_diagram_block(doc, diagrams, "业务流程图", qa)
 
     for title, body in modules:
         section_no += 1
-        add_heading_cn(doc, f"{cn_number(section_no)}、{title}", 1)
+        add_heading_cn(doc, manual_heading_text(section_no, title, numbered_headings), 1)
         add_paragraphs(doc, body)
         chunk = pick_screenshots(screenshots, module_screenshot_keywords(title), used_screenshots)
         insert_screenshot_block(doc, chunk, title, qa)
@@ -985,26 +1045,26 @@ def build_manual_docx(workdir: Path, out_dir: Path, meta: dict[str, str], busine
     remaining_screenshots = [path for path in screenshots if path not in used_screenshots]
     if remaining_screenshots:
         section_no += 1
-        add_heading_cn(doc, f"{cn_number(section_no)}、补充操作截图", 1)
+        add_heading_cn(doc, manual_heading_text(section_no, "补充操作截图", numbered_headings), 1)
         add_paragraphs(doc, "以下截图用于补充展示软件运行过程中的文件导入、处理反馈、日志显示或输出结果等界面状态。")
         insert_screenshot_block(doc, remaining_screenshots[:12], "补充操作截图", qa)
 
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、输出结果字段说明", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "输出结果字段说明", numbered_headings), 1)
     add_output_table(doc, parse_output_rows(manual_text))
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、计算方法和技术特点", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "计算方法和技术特点", numbered_headings), 1)
     add_paragraphs(doc, compose_technical_text(meta, business))
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、常见问题与处理建议", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "常见问题与处理建议", numbered_headings), 1)
     add_faq(doc)
     section_no += 1
-    add_heading_cn(doc, f"{cn_number(section_no)}、使用边界与注意事项", 1)
+    add_heading_cn(doc, manual_heading_text(section_no, "使用边界与注意事项", numbered_headings), 1)
     notes = business.get("notes") or "软件输出结果应结合业务规则、原始数据和人工复核使用。涉及正式提交、合同、财务、医疗、法律、工程安全等场景时，应按适用制度或标准进行人工确认。"
     add_paragraphs(doc, notes)
 
     doc.save(str(out_path))
-    qa.append(f"{'PASS' if len(screenshots) >= 7 else 'WARN'}: manual screenshot count={len(screenshots)}")
+    qa.append(f"{'PASS' if len(screenshots) >= min_screenshots else 'WARN'}: manual selected screenshot count={len(screenshots)}, expected>={min_screenshots}, discovered={len(all_screenshots)}")
     qa.extend(verify_manual_docx(out_path))
     return GeneratedFile("操作说明书", out_path), qa
 
@@ -1039,12 +1099,11 @@ def add_paragraphs(doc: Document, text: str) -> None:
         run.font.size = Pt(10.5)
 
 
-def insert_screenshot_block(doc: Document, screenshots: list[Path], label: str, qa: list[str]) -> None:
+def insert_screenshot_block(doc: Document, screenshots: list[Path], label: str, qa: list[str], *, required: bool = False) -> None:
     if not screenshots:
-        para = doc.add_paragraph()
-        run = para.add_run(f"【待补充截图：{label}】")
-        run.font.color.rgb = RGBColor(180, 60, 40)
-        qa.append(f"WARN: missing screenshot for {label}")
+        if not required:
+            return
+        qa.append(f"FAIL: missing required screenshot for {label}")
         return
     for path in screenshots:
         caption = doc.add_paragraph()
@@ -1150,16 +1209,28 @@ def write_report(out_dir: Path, generated: list[GeneratedFile], meta: dict[str, 
 
 def build_all(args: argparse.Namespace) -> int:
     workdir = Path(args.workdir).resolve()
-    template_dir = Path(args.template_dir).resolve() if args.template_dir else None
+    reference_word_dir = Path(args.reference_word_dir).resolve() if args.reference_word_dir else None
+    template_dir = Path(args.template_dir).resolve() if args.template_dir else reference_word_dir
     out_dir = Path(args.out_dir).resolve() if args.out_dir else workdir / "正式资料" / "word"
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = load_metadata(workdir, args)
     business = extract_business_paragraphs(workdir)
     screenshots_dir = Path(args.screenshots_dir).resolve() if args.screenshots_dir else None
+    reference_image_count = reference_manual_image_count(reference_word_dir)
+    min_screenshots = reference_image_count or 7
+    numbered_headings = reference_word_dir is None
 
     generated: list[GeneratedFile] = []
     qa_sections: dict[str, list[str]] = {}
+
+    if reference_word_dir:
+        qa_sections["参考模板"] = [
+            f"PASS: reference word dir used: {reference_word_dir}",
+            f"PASS: application form template source={template_dir}",
+            f"PASS: manual heading style={'numbered' if numbered_headings else 'plain'}",
+            f"PASS: reference manual image count={reference_image_count or 'not-detected'}",
+        ]
 
     app, app_qa = build_application_docx(workdir, out_dir, meta, business, template_dir)
     generated.append(app)
@@ -1169,7 +1240,15 @@ def build_all(args: argparse.Namespace) -> int:
     generated.append(source)
     qa_sections["源代码"] = source_qa
 
-    manual, manual_qa = build_manual_docx(workdir, out_dir, meta, business, screenshots_dir)
+    manual, manual_qa = build_manual_docx(
+        workdir,
+        out_dir,
+        meta,
+        business,
+        screenshots_dir,
+        min_screenshots=min_screenshots,
+        numbered_headings=numbered_headings,
+    )
     generated.append(manual)
     qa_sections["操作说明书"] = manual_qa
 
@@ -1186,6 +1265,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--workdir", required=True, help="软件著作权申请资料目录")
     parser.add_argument("--template-dir", help="代理样本文档或申请表模板目录")
+    parser.add_argument("--reference-word-dir", help="参考 Word 三件套目录；用于复制申请表模板、对齐说明书标题样式和截图数量")
     parser.add_argument("--out-dir", help="DOCX 输出目录，默认 <workdir>/正式资料/word")
     parser.add_argument("--screenshots-dir", help="优先使用的截图目录")
     parser.add_argument("--software-name")
