@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import html
 import json
 import re
 import zipfile
@@ -22,6 +23,19 @@ AI_PHRASES = [
     "丰富功能",
     "旨在",
 ]
+BAD_PUNCT_PATTERNS = (
+    "。；",
+    "；。",
+    "。。",
+    "，，",
+    "、、",
+    "，。",
+    "、。",
+    "；；",
+    "：。",
+    "；，",
+    "，；",
+)
 
 
 def read_text(path: Path) -> str:
@@ -97,6 +111,7 @@ def docx_image_count(path: Path) -> int:
 
 def text_quality_failures(label: str, text: str, *, min_cjk: int = 0) -> list[str]:
     failures: list[str] = []
+    plain_text = html.unescape(re.sub(r"<[^>]+>", "", text))
     replacement_count = text.count("\ufffd")
     qmark_count = text.count("?")
     if replacement_count:
@@ -107,6 +122,16 @@ def text_quality_failures(label: str, text: str, *, min_cjk: int = 0) -> list[st
         cjk = len(re.findall(r"[\u4e00-\u9fff]", text))
         if len(text) > 1000 and cjk < min_cjk:
             failures.append(f"{label} 中文字符数量异常偏低，疑似写入 DOCX 时编码丢失，中文数 {cjk}")
+    punct_hits = [pattern for pattern in BAD_PUNCT_PATTERNS if pattern in plain_text]
+    if punct_hits:
+        failures.append(f"{label} 含异常中文标点组合：" + "、".join(punct_hits))
+    inline_bullet_lines = [
+        line.strip()
+        for line in plain_text.splitlines()
+        if sum(line.count(mark) for mark in ("・", "•", "·")) >= 2
+    ]
+    if inline_bullet_lines:
+        failures.append(f"{label} 含同一行伪项目符号列表，应改为真实 Word 列表")
     return failures
 
 

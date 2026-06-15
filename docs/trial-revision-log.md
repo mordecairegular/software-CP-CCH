@@ -50,3 +50,24 @@
 - 验证方式和结果：`py_compile` 通过 `project_audit.py`、`material_check.py`、`word_material_builder.py`、`confirm_stage.py`；`project_audit.py` 烟测能识别样例项目的原生 Tkinter UI 风险；`rg` 确认候选挖掘、申报对象确认、UI 设计、截图 manifest 和母版复用规则均接入主流程、prompt 与脚本。
 - 回归场景：无现成软件时必须先比较 MVP 候选；现有仓库必须先确认申报对象；本轮开发软件必须生成 UI 设计方案和截图 manifest；裸 Tkinter/简陋 UI 不得默认通过；Word 只插入已验收截图。
 - 未决问题：后续可增加专门的 `tools/screenshot_manifest_check.py` 和 UI 截图像素级检测。
+
+## 2026-06-11 试用反馈：中文标点与列表结构门禁
+
+- 用户反馈摘要：用户截图指出正式操作说明书中存在 `Python。；Python 3`、句末 `。。`、多个伪项目符号硬拼在同一段等细节问题。
+- 影响范围：Word 说明书生成器、材料自检脚本、Word 交付规则和最终生成提示。
+- 观察到的问题：旧 QA 关注乱码、截图和跨项目残留，但没有检查中文标点规范，也没有识别“多个 `・`/`•`/`·` 项目符号被拼成一个普通段落”的排版问题。
+- 修订决策：`word_material_builder.py` 新增中文标点规范化、技术特点列表解析和真实 Word `List Bullet` 写入；运行环境句式改为“编程语言：...。运行支撑环境：...。”；`material_check.py` 新增异常中文标点和同段伪项目符号 FAIL 门禁；同步更新 `SKILL.md`、`prompts/word_final_builder.md`、`references/word_delivery_rules.md`。
+- 改动文件：`SKILL.md`、`prompts/word_final_builder.md`、`references/word_delivery_rules.md`、`tools/word_material_builder.py`、`tools/material_check.py`。
+- 验证方式和结果：`py_compile` 通过；当前案件重新生成 `word_新版skill重跑_标点修复_20260611_2053`，操作说明书“计算方法和技术特点”回读为 7 条真实 `List Bullet` 段落；申请表和操作说明书异常标点为 0、同段伪项目符号为 0；用新自检回扫旧 `word_新版skill重跑_截图修复_20260611_2041` 可判定 FAIL。
+- 回归场景：正式 Word 中出现 `。；`、`；。`、`。。`、`，，`、`、。`、`，。`、`；；` 或同一段多个伪项目符号时，交付结论必须为 FAIL。
+- 未决问题：后续可继续增加更细的中文排版规则，如英文库名与中文之间的空格策略、`.prj` 等扩展名的断行保护。
+
+## 2026-06-15 18:59:40 试用反馈
+
+- 用户反馈摘要：将本地已验证的 Word QA 增强同步到远端仓库，避免远端 Cowork 插件更新覆盖本地标点与列表结构门禁。
+- 影响范围：tool,prompt,reference,docs,repository sync
+- 修订决策：保留远端 Cowork/Claude 插件注册文件，同时移植本地中文标点规范化、真实 Word 列表生成、异常标点和同段伪项目符号 FAIL 检查；本地历史案件的专用技术栈短语扩展不原样同步，改为通用技术特点条目清洗，避免跨项目残留。
+- 改动文件：docs/trial-revision-log.md,prompts/word_final_builder.md,references/word_delivery_rules.md,tools/material_check.py,tools/word_material_builder.py
+- 验证方式和结果：`py_compile` 通过 `project_audit.py`、`source_extract.py`、`confirm_stage.py`、`material_check.py`、`revision_log.py`、`word_material_builder.py`；定向烟测通过异常中文标点 FAIL、同段伪项目符号 FAIL、中文标点规范化和技术特点列表拆分；`git diff` 复核仅涉及修订日志、最终 Word prompt、Word 交付规则和两个 QA/生成脚本。
+- 回归场景：正式 Word 中出现异常中文标点或同段多个伪项目符号时必须 FAIL；技术特点应生成真实 Word 列表或独立段落；远端插件注册文件仍保留。
+- 未决问题：后续可继续补充更细的中文排版规则。

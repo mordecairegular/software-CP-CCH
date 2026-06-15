@@ -16,7 +16,7 @@ import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 from docx import Document
 from docx.enum.section import WD_ORIENT
@@ -37,6 +37,19 @@ except Exception:  # pragma: no cover - optional for structural generation
 LINES_PER_PAGE = 50
 FRONT_LINES = 1650
 BACK_LINES = 1650
+BAD_PUNCT_PATTERNS = (
+    "。；",
+    "；。",
+    "。。",
+    "，，",
+    "、、",
+    "，。",
+    "、。",
+    "；；",
+    "：。",
+    "；，",
+    "，；",
+)
 
 
 @dataclass
@@ -81,6 +94,16 @@ def text_quality_issues(label: str, text: str, *, min_cjk: int = 30) -> list[str
         issues.append(f"FAIL: {label} contains suspicious question-mark mojibake, count={qmark_count}")
     if len(text) > 200 and min_cjk and count_cjk(text) < min_cjk:
         issues.append(f"FAIL: {label} has too few Chinese characters after generation; possible encoding loss")
+    punct_hits = [pattern for pattern in BAD_PUNCT_PATTERNS if pattern in text]
+    if punct_hits:
+        issues.append(f"FAIL: {label} contains malformed Chinese punctuation: {', '.join(punct_hits)}")
+    inline_bullet_lines = [
+        line.strip()
+        for line in text.splitlines()
+        if sum(line.count(mark) for mark in ("・", "•", "·")) >= 2
+    ]
+    if inline_bullet_lines:
+        issues.append(f"FAIL: {label} contains inline bullet list text; use real Word list paragraphs")
     return issues
 
 
@@ -190,10 +213,16 @@ def load_metadata(workdir: Path, args: argparse.Namespace) -> dict[str, str]:
     return meta
 
 
-def extract_business_paragraphs(workdir: Path) -> dict[str, str]:
+def extract_business_paragraphs(workdir: Path) -> dict[str, Any]:
     text = read_text(workdir / "草稿" / "业务理解.md")
     manual = read_text(workdir / "草稿" / "操作手册.md")
     joined = "\n".join([text, manual])
+    business_json = read_json_any(workdir / "草稿" / "业务理解.json")
+    technical_items: list[str] = []
+    if isinstance(business_json, dict):
+        raw_items = business_json.get("technical_characteristics")
+        if isinstance(raw_items, list):
+            technical_items = [str(item).strip() for item in raw_items if str(item).strip()]
 
     def section(title: str) -> str:
         pattern = re.compile(rf"^#+\s*{re.escape(title)}\s*$([\s\S]*?)(?=^#+\s|\Z)", re.MULTILINE)
@@ -206,6 +235,7 @@ def extract_business_paragraphs(workdir: Path) -> dict[str, str]:
         "functions": section("主要功能模块") or section("主要功能"),
         "flow": section("典型操作流程"),
         "technical": section("技术特点的申请表口径") or section("技术特点"),
+        "technical_items": technical_items,
         "environment": section("运行环境"),
         "notes": section("使用注意事项"),
     }
@@ -253,8 +283,11 @@ def compose_main_function_text(meta: dict[str, str], business: dict[str, str]) -
 def compose_technical_text(meta: dict[str, str], business: dict[str, str]) -> str:
     technical = business.get("technical") or ""
     environment = business.get("environment") or ""
+    technical_items = technical_items_from_business(business)
     pieces = []
-    if technical:
+    if technical_items:
+        pieces.append("；".join(strip_terminal_punct(item) for item in technical_items) + "。")
+    elif technical:
         pieces.append(technical)
     pieces.append(
         "软件按数据导入、参数配置、业务处理、结果生成、日志反馈和文件导出等环节组织程序模块，"
@@ -262,13 +295,78 @@ def compose_technical_text(meta: dict[str, str], business: dict[str, str]) -> st
     )
     if environment:
         pieces.append(f"运行环境口径：{environment}")
-    pieces.append(f"编程语言和支撑环境以申请表记录为准：{meta['language']}；{meta['support_env']}。")
+    language = strip_terminal_punct(meta["language"])
+    support_env = strip_terminal_punct(meta["support_env"])
+    pieces.append(f"编程语言和支撑环境以申请表记录为准：{language}；{support_env}。")
     text = " ".join(pieces)
-    return re.sub(r"\s+", " ", text).strip()
+    return normalize_cn_punctuation(re.sub(r"\s+", " ", text).strip())
 
 
 def strip_terminal_punct(text: str) -> str:
     return re.sub(r"[。；;，,\s]+$", "", text.strip())
+
+
+def normalize_cn_punctuation(text: str) -> str:
+    text = text.replace(";", "；")
+    text = re.sub(r"\s+([。；，、：])", r"\1", text)
+    text = re.sub(r"([。；，、：])\s+", r"\1", text)
+    previous = None
+    while previous != text:
+        previous = text
+        for bad in BAD_PUNCT_PATTERNS:
+            replacement = bad[0]
+            if bad in {"。；", "；。", "，；", "；，"}:
+                replacement = "；"
+            elif bad in {"，。", "、。", "：。"}:
+                replacement = "。"
+            text = text.replace(bad, replacement)
+    return text.strip()
+
+
+def ensure_sentence(text: str) -> str:
+    text = normalize_cn_punctuation(strip_terminal_punct(text))
+    return text + "。" if text and text[-1] not in "。！？" else text
+
+
+def split_bullet_like_text(text: str) -> list[str]:
+    items: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        line = re.sub(r"^[・•·\-\*]\s*", "", line).strip()
+        if line:
+            items.append(line)
+    if len(items) <= 1 and any(mark in text for mark in ("・", "•", "·")):
+        items = [part.strip() for part in re.split(r"[・•·]\s*", text) if part.strip()]
+    return items
+
+
+def normalize_technical_item(item: str) -> str:
+    item = normalize_cn_punctuation(strip_terminal_punct(item))
+    item = re.sub(r"^\d+[.、]\s*", "", item)
+    return item
+
+
+def technical_items_from_business(business: dict[str, Any]) -> list[str]:
+    technical = str(business.get("technical") or "")
+    markdown_items = split_bullet_like_text(technical)
+    structured_items = business.get("technical_items", [])
+    if not isinstance(structured_items, list):
+        structured_items = []
+    raw_items = markdown_items or [
+        str(item).strip()
+        for item in structured_items
+        if str(item).strip()
+    ]
+    seen: set[str] = set()
+    items: list[str] = []
+    for raw in raw_items:
+        item = ensure_sentence(normalize_technical_item(raw))
+        if item and item not in seen:
+            items.append(item)
+            seen.add(item)
+    return items
 
 
 def iter_unique_cells(row):
@@ -1102,7 +1200,7 @@ def build_manual_docx(
     add_output_table(doc, parse_output_rows(manual_text))
     section_no += 1
     add_heading_cn(doc, manual_heading_text(section_no, "计算方法和技术特点", numbered_headings), 1)
-    add_paragraphs(doc, compose_technical_text(meta, business))
+    add_technical_section(doc, meta, business)
     section_no += 1
     add_heading_cn(doc, manual_heading_text(section_no, "常见问题与处理建议", numbered_headings), 1)
     add_faq(doc)
@@ -1135,7 +1233,7 @@ def compose_intro(meta: dict[str, str], business: dict[str, str]) -> str:
 
 def add_paragraphs(doc: Document, text: str) -> None:
     for raw in re.split(r"\n{1,2}", text.strip()):
-        line = raw.strip()
+        line = normalize_cn_punctuation(raw.strip())
         if not line:
             continue
         para = doc.add_paragraph()
@@ -1145,6 +1243,38 @@ def add_paragraphs(doc: Document, text: str) -> None:
         run.font.name = "宋体"
         run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
         run.font.size = Pt(10.5)
+
+
+def add_bullet_list(doc: Document, items: list[str]) -> None:
+    for item in items:
+        line = ensure_sentence(item)
+        if not line:
+            continue
+        para = doc.add_paragraph(style="List Bullet")
+        para.paragraph_format.left_indent = Cm(0.9)
+        para.paragraph_format.space_after = Pt(3)
+        run = para.add_run(line)
+        run.font.name = "宋体"
+        run._element.rPr.rFonts.set(qn("w:eastAsia"), "宋体")
+        run.font.size = Pt(10.5)
+
+
+def add_technical_section(doc: Document, meta: dict[str, str], business: dict[str, Any]) -> None:
+    items = technical_items_from_business(business)
+    if items:
+        add_bullet_list(doc, items)
+    else:
+        technical = str(business.get("technical") or "").strip()
+        if technical:
+            add_paragraphs(doc, technical)
+    add_paragraphs(
+        doc,
+        "软件按数据导入、参数配置、业务处理、结果生成、日志反馈和文件导出等环节组织程序模块，"
+        "通过真实项目代码中的界面、数据解析、业务处理和成果输出逻辑完成主要功能。",
+    )
+    language = strip_terminal_punct(meta["language"])
+    support_env = strip_terminal_punct(meta["support_env"])
+    add_paragraphs(doc, f"编程语言：{language}。运行支撑环境：{support_env}。")
 
 
 def insert_screenshot_block(doc: Document, screenshots: list[Path], label: str, qa: list[str], *, required: bool = False) -> None:
