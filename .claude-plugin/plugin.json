@@ -1,0 +1,22 @@
+{
+  "name": "software-CP-CCH",
+  "version": "0.1.0",
+  "description": "中国计算机软件著作权申请全流程 agent：从已有软件扫描、真实性/权属/AI辅助开发审计、材料生成，到必要时协助定义并开发最低可申请软件。",
+  "author": {
+    "name": "mordecairegular",
+    "url": "https://github.com/mordecairegular"
+  },
+  "homepage": "https://github.com/mordecairegular/software-CP-CCH",
+  "repository": "https://github.com/mordecairegular/software-CP-CCH",
+  "license": "MIT",
+  "keywords": [
+    "软著",
+    "软件著作权",
+    "计算机软件著作权",
+    "copyright",
+    "china",
+    "software-registration",
+    "source-code",
+    "operation-manual"
+  ]
+}

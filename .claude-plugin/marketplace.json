@@ -1,0 +1,17 @@
+{
+  "name": "software-CP-CCH",
+  "owner": {
+    "name": "mordecairegular",
+    "url": "https://github.com/mordecairegular"
+  },
+  "description": "中国计算机软件著作权申请全流程 agent：从已有软件扫描、真实性/权属/AI辅助开发审计、材料生成，到必要时协助定义并开发最低可申请软件。",
+  "plugins": [
+    {
+      "name": "software-CP-CCH",
+      "source": "./",
+      "description": "Chinese software copyright (软著) registration full-workflow skill: project scan, audit, material generation (application form, source code, operation manual) in Word format.",
+      "version": "0.1.0",
+      "license": "MIT"
+    }
+  ]
+}
